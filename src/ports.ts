@@ -34,6 +34,8 @@ export interface Terminal {
   findTab(tty: string): Promise<TabRef | undefined>;
   /** Discards whatever sits in the program's input box, then types `command` followed by Return. */
   typeCommand(tab: TabRef, command: string): Promise<void>;
+  /** Types `text` followed by Return and leaves the program's input box as it is. */
+  typeText(tab: TabRef, text: string): Promise<void>;
   /** The last non-empty lines visible in the window's first tab. */
   lastLines(windowId: number): Promise<string>;
   close(windowId: number): Promise<void>;
@@ -56,8 +58,10 @@ export type TranscriptMark = {
 export interface Transcripts {
   /** The current end of the session's transcript, or undefined when it cannot be found or read. */
   mark(sessionId: string): TranscriptMark | undefined;
-  /** Whether a finished compaction was recorded after `mark`. */
-  compactedSince(mark: TranscriptMark): boolean;
+  /** Whether a finished compaction was recorded after `mark`. With "requested", one that Claude Code started on its own does not count. */
+  compactedSince(mark: TranscriptMark, which?: "any" | "requested"): boolean;
+  /** The texts that were queued for the session after `mark`, oldest first. */
+  queuedSince(mark: TranscriptMark): string[];
 }
 
 export interface Clock {

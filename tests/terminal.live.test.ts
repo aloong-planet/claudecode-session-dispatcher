@@ -29,7 +29,7 @@ async function eventually<T>(read: () => T | undefined, what: string): Promise<T
 const frontWindowId = async () => Number((await run("osascript", ["-e", 'tell application "Terminal" to id of front window'])).trim());
 
 describe.skipIf(process.env.CLAUDE_SESSION_POOL_LIVE !== "1")("Terminal, live", () => {
-  it("opens a window in a directory, keeps the earlier window in front, types a command after an interrupt, and closes the window", async () => {
+  it("opens a window in a directory, keeps the earlier window in front, types a command after an interrupt and a text without one, and closes the window", async () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), "claude-session-pool-")));
     const directory = join(home, `a "live" dir`);
     mkdirSync(directory);
@@ -57,6 +57,14 @@ describe.skipIf(process.env.CLAUDE_SESSION_POOL_LIVE !== "1")("Terminal, live", 
         return /0[da]$/.test(received) ? received : undefined;
       }, "the typed command");
       expect(typed.slice(0, -2)).toBe(`03${Buffer.from("/clear").toString("hex")}`);
+
+      const chunksBefore = lines().length;
+      await terminal.typeText(tab!, "/compact");
+      const text = await eventually(() => {
+        const received = lines().slice(chunksBefore).join("");
+        return /0[da]$/.test(received) ? received : undefined;
+      }, "the typed text");
+      expect(text.slice(0, -2)).toBe(Buffer.from("/compact").toString("hex"));
 
       expect(await terminal.lastLines(windowId)).toContain("keylogger ready");
 

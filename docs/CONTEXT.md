@@ -1,12 +1,16 @@
 # claude-session-pool
 
-An MCP server that lets one Claude Code session open, reset, compact and close a set of interactive Claude Code sessions running in Terminal windows on the same Mac. It exists so that a session handing out tickets no longer needs a person to create its worker sessions or to type `/clear` and `/compact` into them.
+An MCP server that lets one Claude Code session open, reset, compact and close a set of interactive Claude Code sessions running in Terminal windows on the same Mac, and offers every session that loads it a tool with which that session compacts its own conversation. It exists so that a session handing out tickets no longer needs a person to create its worker sessions or to type `/clear` and `/compact` into them.
 
 ## Language
 
 **Dispatcher session**:
-The Claude Code session that started the server process, and therefore the only caller of its tools. It is never a slot of its own pool.
+The Claude Code session that the start-up command started, and the only one the server offers a pool's tools to. It is never a slot of its own pool.
 _Avoid_: main session, lead, master (in Claude Code "lead" names an agent-team role, which this is not)
+
+**Attached session**:
+The Claude Code session that started a given server process. Every session that loads the server has a process of its own, so an attached session is a dispatcher session only when the start-up command started it.
+_Avoid_: caller, own session, current session
 
 **Worker session**:
 An interactive Claude Code session running in a Terminal window that occupies a slot. It is not a background session started with `claude --bg`, a subagent or an agent-team teammate.
@@ -25,5 +29,5 @@ The persisted list of a pool's slots.
 _Avoid_: registry, session table
 
 **Typed command**:
-A slash command the server delivers to a worker session by typing it into the session's Terminal tab. It is not a cross-session message: a slash command inside a message arrives as plain text and never runs.
+A slash command the server delivers to a worker session by typing it into the session's Terminal tab, after an interrupt that discards the input box. It is not a cross-session message: a slash command inside a message arrives as plain text and never runs. The `/compact` that `compact_self` types into the attached session's tab, without the interrupt, is not a typed command.
 _Avoid_: sent command, injected command

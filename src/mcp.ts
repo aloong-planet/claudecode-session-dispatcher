@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { Outcome, Pool } from "./pool.ts";
+import type { Pool } from "./pool.ts";
+import type { Outcome } from "./report.ts";
+import type { SelfCompaction } from "./self-compaction.ts";
 
 const name = z
   .string()
@@ -12,15 +14,44 @@ const permissionMode = z
   .describe("Permission mode for the new session: auto, acceptEdits, default, plan or dontAsk. Default: auto.");
 const force = z.boolean().optional().describe("Close the session even when it is busy or waiting. Default: false.");
 
-const INSTRUCTIONS =
+const REPORTING = "A refusal or an unconfirmed step is returned as an error whose text gives the reason.";
+
+const POOL_INSTRUCTIONS =
   "Manages the pool of worker sessions of the dispatcher session this server is attached to: interactive Claude Code " +
-  "sessions in Terminal windows, started in the dispatcher session's directory. A tool acts only on slots in the pool's " +
-  "roster. A refusal or an unconfirmed step is returned as an error whose text gives the reason.";
+  "sessions in Terminal windows, started in the dispatcher session's directory. A pool tool acts only on slots in the " +
+  "pool's roster. compact_self compacts the conversation of this session itself. " +
+  REPORTING;
 
-/** The MCP server that offers a pool's operations as tools. */
-export function createServer(pool: Pool): McpServer {
-  const server = new McpServer({ name: "claude-session-pool", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+const SELF_INSTRUCTIONS =
+  "Offers one tool, compact_self, with which the session this server is attached to compacts its own conversation. It " +
+  "reaches no other session. " +
+  REPORTING;
 
+/** What a server offers: the self-compaction of the attached session, and a pool's operations when that session is a dispatcher session. */
+export type Offer = { selfCompaction: SelfCompaction; pool?: Pool };
+
+/** The MCP server that offers these operations as tools. */
+export function createServer({ selfCompaction, pool }: Offer): McpServer {
+  const server = new McpServer(
+    { name: "claude-session-pool", version: "0.1.0" },
+    { instructions: pool ? POOL_INSTRUCTIONS : SELF_INSTRUCTIONS },
+  );
+
+  server.registerTool(
+    "compact_self",
+    {
+      description:
+        "Compact this session's own conversation: types /compact into this session's Terminal tab. The command runs when the current turn ends, so call this as the last step of a turn and then end the turn. Once the compaction is recorded, the word 'continue' is typed into this session, and it carries on from its summary. Takes no arguments and reaches no other session.",
+      inputSchema: {},
+    },
+    async () => reply(await selfCompaction.request()),
+  );
+  if (pool) registerPoolTools(server, pool);
+
+  return server;
+}
+
+function registerPoolTools(server: McpServer, pool: Pool): void {
   server.registerTool(
     "init",
     {
@@ -91,8 +122,6 @@ export function createServer(pool: Pool): McpServer {
     },
     async (args) => reply(await pool.release(args)),
   );
-
-  return server;
 }
 
 function reply(outcome: Outcome) {

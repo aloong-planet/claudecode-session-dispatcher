@@ -38,13 +38,16 @@ const FIND_TAB = `on run argv
   end timeout
 end run`;
 
-const TYPE_COMMAND = `on run argv
+const typing = (text: string) => `on run argv
   with timeout of 30 seconds
     tell application "Terminal"
-      do script ((ASCII character 3) & (item 3 of argv)) in tab ((item 2 of argv) as integer) of window id ((item 1 of argv) as integer)
+      do script ${text} in tab ((item 2 of argv) as integer) of window id ((item 1 of argv) as integer)
     end tell
   end timeout
 end run`;
+
+const TYPE_COMMAND = typing("((ASCII character 3) & (item 3 of argv))");
+const TYPE_TEXT = typing("(item 3 of argv)");
 
 const CONTENTS = `on run argv
   with timeout of 30 seconds
@@ -98,6 +101,10 @@ export class TerminalApp implements Terminal {
 
   async typeCommand(tab: TabRef, command: string): Promise<void> {
     await this.script(TYPE_COMMAND, String(tab.windowId), String(tab.tab), command);
+  }
+
+  async typeText(tab: TabRef, text: string): Promise<void> {
+    await this.script(TYPE_TEXT, String(tab.windowId), String(tab.tab), text);
   }
 
   async lastLines(windowId: number): Promise<string> {

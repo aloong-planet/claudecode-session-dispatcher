@@ -1,7 +1,8 @@
 /**
- * The tools as an MCP client sees them: the real server object over an in-memory channel, on a pool that runs on
- * `FakeMac`. Each case proves that a tool's arguments reach the pool and that its outcome comes back; the rules
- * themselves are covered in `claude-session-pool.test.ts`.
+ * The tools as an MCP client sees them: the real server object over an in-memory channel, on a pool and a
+ * self-compaction that run on `FakeMac`. Each case proves which tools a session is offered, that a tool's arguments
+ * reach the operation and that its outcome comes back; the rules themselves are covered in
+ * `claude-session-pool.test.ts` and `self-compaction.test.ts`.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FileTranscripts } from "../src/adapters/transcripts.ts";
 import { createServer } from "../src/mcp.ts";
 import { Pool } from "../src/pool.ts";
+import { SelfCompaction } from "../src/self-compaction.ts";
 import { FakeMac } from "./support/fake-mac.ts";
 
 const temporaryDirectories: string[] = [];
@@ -21,7 +23,10 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-async function connect() {
+const ATTACHED_PID = 4242;
+
+/** A server attached to a session in the middle of a turn: as a dispatcher session, with a pool, or as any other session. */
+async function connect({ dispatcher } = { dispatcher: true }) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "claude-session-pool-")));
   temporaryDirectories.push(home);
   const directory = join(home, "project");
@@ -30,18 +35,19 @@ async function connect() {
   const mac = new FakeMac();
   fakes.push(mac);
   mac.transcriptRoot = transcriptRoot;
-  const pool = new Pool({
-    directory,
-    dispatcherPid: 4242,
-    rosterRoot: join(home, "rosters"),
+  const attached = mac.addSession({ name: "attached", cwd: directory, pid: ATTACHED_PID, status: "busy" });
+  mac.appendTurnRecord(attached.sessionId!);
+  const adapters = {
     sessions: mac.lister,
     terminal: mac.terminal,
     processes: mac.processes,
     transcripts: new FileTranscripts(transcriptRoot),
     clock: mac.clock,
-  });
+  };
+  const selfCompaction = new SelfCompaction({ sessionPid: ATTACHED_PID, ...adapters });
+  const pool = dispatcher ? new Pool({ directory, dispatcherPid: ATTACHED_PID, rosterRoot: join(home, "rosters"), ...adapters }) : undefined;
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await createServer(pool).connect(serverSide);
+  await createServer({ selfCompaction, pool }).connect(serverSide);
   const client = new Client({ name: "test", version: "0" });
   await client.connect(clientSide);
   const call = async (name: string, args: Record<string, unknown> = {}) => {
@@ -49,10 +55,42 @@ async function connect() {
     const content = result.content as { type: string; text: string }[];
     return { isError: result.isError === true, text: content.map((part) => part.text).join("\n") };
   };
-  return { mac, call, directory };
+  const toolNames = async () => (await client.listTools()).tools.map((tool) => tool.name).sort();
+  return { mac, call, directory, attached, toolNames };
 }
 
 describe("the MCP server", () => {
+  it("offers a dispatcher session the nine pool tools and compact_self", async () => {
+    const { toolNames } = await connect({ dispatcher: true });
+
+    expect(await toolNames()).toEqual(["adopt", "clear", "close", "compact", "compact_self", "init", "open", "recycle", "release", "status"]);
+  });
+
+  it("offers any other session compact_self alone, and answers a call to a pool tool with an error", async () => {
+    const { mac, call, directory, toolNames } = await connect({ dispatcher: false });
+    mac.addSession({ name: "w1", cwd: directory });
+
+    const names = await toolNames();
+    const cleared = await call("clear", { name: "w1" });
+    const closed = await call("close", { name: "w1", force: true });
+
+    expect(names).toEqual(["compact_self"]);
+    expect(cleared.isError).toBe(true);
+    expect(cleared.text).toContain("Tool clear not found");
+    expect(closed.isError).toBe(true);
+    expect([mac.typed, mac.terminated, mac.launches]).toEqual([[], [], []]);
+  });
+
+  it.each([{ dispatcher: true }, { dispatcher: false }])("compact_self compacts the attached session (dispatcher: $dispatcher)", async ({ dispatcher }) => {
+    const { mac, call, attached } = await connect({ dispatcher });
+
+    const result = await call("compact_self");
+
+    expect(result.isError).toBe(false);
+    expect(result.text).toContain("is queued");
+    expect(mac.typed.map(({ windowId, command }) => ({ windowId, command }))).toEqual([{ windowId: mac.windowOf(attached).id, command: "/compact" }]);
+  });
+
   it("init opens every name in the list it is given", async () => {
     const { mac, call } = await connect();
 

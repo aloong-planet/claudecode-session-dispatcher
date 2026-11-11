@@ -6,9 +6,19 @@
 
 A dispatcher session hands tickets to worker sessions and receives their reports through cross-session messages. It cannot create a worker session, and neither it nor a worker session can run `/clear` or `/compact`. The owner therefore opens every worker session by hand, types `/clear` into it after each ticket and `/compact` before each pull request, and tells the dispatcher session when that is done. Whenever the owner is away, the run stops.
 
+No session can compact its own conversation either: a session that should carry on with less context stops and waits for the owner to type `/compact` and then to tell it to go on.
+
+Each time the dispatcher session is restarted, Claude Code gives it a new generated name, and the reports its worker sessions address to the old name no longer arrive.
+
 ## Solution
 
-An MCP server attached to the dispatcher session alone. Through its tools the dispatcher session opens worker sessions in Terminal windows, registers ones the owner opened, resets or compacts a worker session's conversation by typing the command into its window, reads the real state of every slot, closes or replaces a worker session, and takes a slot off the roster. None of these steps needs the owner.
+An MCP server that offers two levels of access.
+
+To the dispatcher session it offers the tools that manage a pool. Through them the dispatcher session opens worker sessions in Terminal windows, registers ones the owner opened, resets or compacts a worker session's conversation by typing the command into its window, reads the real state of every slot, closes or replaces a worker session, and takes a slot off the roster.
+
+To every session that has the server, the dispatcher session included, it offers one tool with which the session compacts its own conversation; the server then types `continue` so that the session carries on.
+
+The dispatcher session is the one started through the repository's start-up command, which also keeps that session under one name across restarts. None of these steps needs the owner.
 
 ## User Stories
 
@@ -74,12 +84,36 @@ As a dispatcher session, I take a slot off the roster and leave its session as i
 
 - claude-session-pool::US-007/AC-01: `release` removes the slot from the roster, whatever the slot's state, and does not type into, end or close anything.
 
+### claude-session-pool::US-008 Compact my own conversation and carry on
+
+As a session, I compact my own conversation when I judge it is time and continue afterwards, so that the owner neither types `/compact` into my window nor tells me to go on.
+
+- claude-session-pool::US-008/AC-01: `compact_self` types `/compact` into the Terminal tab that hosts the attached session, without bringing that window to the front and without interrupting the turn in progress. It takes no arguments and acts on no other session.
+- claude-session-pool::US-008/AC-02: `compact_self` returns success once the session's transcript shows `/compact` queued on its own. The result states that the command runs when the current turn ends and that `continue` is typed after the compaction.
+- claude-session-pool::US-008/AC-03: When the transcript shows the command queued as part of a longer text, which happens when text was sitting in the session's input box, `compact_self` returns an error that quotes the queued text and states that no compaction will run. The server then types nothing further, and the call is not pending.
+- claude-session-pool::US-008/AC-04: When the transcript shows nothing queued 10 seconds after the typing, `compact_self` returns the result "unconfirmed". The call stays pending, so a compaction recorded later is still followed by `continue`.
+- claude-session-pool::US-008/AC-05: When the session's transcript shows a compaction recorded after the command was typed, other than one Claude Code started on its own, and the session is idle, the server types the word `continue` into the same tab as a message. Text sitting in the input box at that moment is discarded, as under claude-session-pool::REQ-002/AC-02. The text typed is always `continue`; the tool accepts no text to type.
+- claude-session-pool::US-008/AC-06: `compact_self` refuses and types nothing in each of these cases: the attached session is not listed as a live interactive session; its state is not `busy`, in which case the error states the state and, for `waiting`, what the session is waiting for; its transcript cannot be found or read; no Terminal tab hosts it; an earlier `compact_self` call of the same session is still pending.
+- claude-session-pool::US-008/AC-07: A call is pending from the typing until `continue` is typed. It also stops being pending, and no `continue` is typed, in each of these cases: no such compaction is recorded within 30 minutes of the typing; the session is not idle within 60 seconds of the compaction being recorded; the session has ended; the session's ID has changed. A session listing that fails during this wait does not end it.
+
+### claude-session-pool::US-009 One name for the dispatcher session across restarts
+
+As the owner, I start and resume the dispatcher session through the start-up command and it keeps one name, so that worker sessions keep reporting to a name that still answers.
+
+- claude-session-pool::US-009/AC-01: When its arguments start a new interactive session and give no name, the start-up command starts the session under the default name: the name of the directory the command is run in, followed by `-dispatcher`.
+- claude-session-pool::US-009/AC-02: When its arguments resume a session by session ID and that session's transcript shows a name that was given to it, the command adds no name, and the session keeps the name it has.
+- claude-session-pool::US-009/AC-03: When its arguments resume a session by session ID and that session's transcript shows no such name, the command starts the session under the default name.
+- claude-session-pool::US-009/AC-04: Before it uses the default name, the command lists the live sessions on this Mac. When one of them already answers to the default name, in any directory, the command starts nothing and prints that session's process ID and directory and the advice to pass `-n` with another name. When the sessions cannot be listed, it starts nothing and prints the reason and the same advice.
+- claude-session-pool::US-009/AC-05: The command adds no name and lists no sessions in each of these cases: the arguments give a name with `-n` or `--name`, which is used as given; they resume a session and the command cannot tell from them which local transcript is that session's, that is `-c`, `--continue`, `--from-pr`, `--teleport`, or `-r` or `--resume` with no value or with a value that is not a session ID; they contain `--fork-session`; they start no new interactive session in the terminal the command is run in, that is they contain `-p`, `--print`, `--bg`, `--background`, `--cloud`, `--environment`, `--desktop`, `-h`, `--help`, `-v` or `--version`. An option that begins with two hyphens is also recognised with a value attached to it by `=`, as in `--name=<name>`.
+- claude-session-pool::US-009/AC-06: When the arguments resume a session by session ID and that session's transcript cannot be found or read, the command adds no name, prints one line that says so, and starts the session.
+- claude-session-pool::US-009/AC-07: In the directory `/`, which has no name, the command builds no default name: where this story calls for one, it starts nothing and prints the advice to pass `-n`.
+
 ## Functional Requirements
 
 ### claude-session-pool::REQ-001 Only slots, and never the dispatcher session
 
 - claude-session-pool::REQ-001/AC-01: `clear`, `compact`, `close`, `recycle` and `release` refuse a name that is not a slot in the roster, and act on no session.
-- claude-session-pool::REQ-001/AC-02: No tool types into, ends or registers the dispatcher session.
+- claude-session-pool::REQ-001/AC-02: No tool types into, ends or registers the dispatcher session, with one exception: `compact_self` called by the dispatcher session types into the dispatcher session under claude-session-pool::US-008.
 
 ### claude-session-pool::REQ-002 Delivering a typed command
 
@@ -102,15 +136,25 @@ A slot added by one server process is a slot for the next server process started
 - claude-session-pool::REQ-005/AC-03: A session listing that fails while a tool waits after such a step does not end the wait. The wait goes on to its limit, and an error at the limit includes the listing's error.
 - claude-session-pool::REQ-005/AC-04: When the slot's session disappears, or another process comes to answer to the slot's name, while `clear` or `compact` waits, the tool returns at once and states the slot's state.
 
+### claude-session-pool::REQ-006 What the server offers depends on how the session was started
+
+- claude-session-pool::REQ-006/AC-01: To a dispatcher session the server offers `init`, `open`, `adopt`, `status`, `clear`, `compact`, `close`, `recycle`, `release` and `compact_self`.
+- claude-session-pool::REQ-006/AC-02: To any other attached session the server offers `compact_self` alone. The other nine tools are not listed there, and a call to one of them is answered with an error and does nothing.
+- claude-session-pool::REQ-006/AC-03: A session is a dispatcher session only when the start-up command started it. A worker session the server opened, a session started with `claude` directly, and a session started from inside a dispatcher session are not dispatcher sessions.
+
 ## Constraints
 
 ### claude-session-pool::CON-001 Terminal on macOS only (direct acceptance)
 
 Applies to: every tool; worker sessions run in windows of the macOS Terminal application (ADR-0001), and a session in any other terminal, or a background session, cannot be opened, adopted or acted on.
 
-### claude-session-pool::CON-002 Attached to the dispatcher session only (direct acceptance)
+### claude-session-pool::CON-002 How the server is attached to a session
 
-Applies to: installation and start-up; the repository provides one command that starts a Claude Code session with this server attached to that session, passing its arguments on to `claude`. Attaching it changes no user-level or project-level MCP configuration, so worker sessions do not see the tools. The command loads the tool definitions up front, so the dispatcher session calls a tool without first searching for it.
+Applies to: installation and start-up.
+
+- claude-session-pool::CON-002/AC-01: The repository provides one start-up command. It starts a Claude Code session with this server attached to that session, passing its arguments on to `claude`, and marks that session as a dispatcher session. It changes no user-level or project-level MCP configuration. It loads the tool definitions up front, so the session calls a tool without first searching for it.
+- claude-session-pool::CON-002/AC-02: A session the start-up command did not start has the server only when a user-level MCP registration names it. With that registration every Claude Code session of this user on this Mac loads the server, in any directory. The owner makes the registration once; neither the server nor the start-up command creates, changes or removes it.
+- claude-session-pool::CON-002/AC-03: A session the start-up command starts while that registration exists is offered the ten tools of claude-session-pool::REQ-006/AC-01, each of them once.
 
 ### claude-session-pool::CON-003 Arguments that reach a command line are validated
 
@@ -120,10 +164,11 @@ Applies to: `init`, `open`, `adopt`, `clear`, `compact`, `close`, `recycle`, `re
 - claude-session-pool::CON-003/AC-02: A `model` argument must match `^[A-Za-z0-9._\[\]-]{1,64}$`; any other value is refused before anything is run.
 - claude-session-pool::CON-003/AC-03: A `permissionMode` argument must be one of `auto`, `acceptEdits`, `default`, `plan` and `dontAsk`. Any other value, `bypassPermissions` included, is refused before anything is run.
 - claude-session-pool::CON-003/AC-04: A pool directory whose path contains spaces or quote characters is handled as that exact path.
+- claude-session-pool::CON-003/AC-05: When the name of the directory the start-up command is run in contains a control character, the command does not build a default name from it: where claude-session-pool::US-009 calls for the default name, it starts nothing and prints the advice to pass `-n`.
 
 ### claude-session-pool::CON-004 Runtime (direct acceptance)
 
-Applies to: the server process; it runs on the `node` found on the dispatcher session's `PATH`, which must be Node.js 22.18 or later, with no build step.
+Applies to: the server process and the start-up command; each runs on the `node` found on the `PATH` of the session it serves, which must be Node.js 22.18 or later, with no build step.
 
 ## Failure modes and boundaries
 
@@ -142,24 +187,34 @@ Slot states and how a slot moves between them:
 
 Boundaries and failures:
 
-- **A message reaches a slot between the idle check and the typing.** The session starts a turn, and the interrupt that discards the input box (claude-session-pool::REQ-002/AC-02) ends that turn. The server does not detect this. The tool's result still follows its own confirmation rule.
+- **A message reaches a session between the idle check and the typing**, of a typed command into a slot or of `continue` after `compact_self`. The session starts a turn, and the interrupt that discards the input box (claude-session-pool::REQ-002/AC-02) ends that turn. The server does not detect this. A tool's result still follows its own confirmation rule.
 - **`clear` or `compact` on a slot that is `gone` or `ambiguous`**: refused under claude-session-pool::REQ-002/AC-03.
 - **`close` or `recycle` on an `ambiguous` slot**: refused, with the number of sessions that answer to the name; `force` does not change this.
 - **`open` on a name that is a `gone` slot**: allowed; the slot becomes live again. On a live slot it is refused under claude-session-pool::US-001/AC-05. When the new session is not idle within 60 seconds, the slot stays in the roster and the error says so; the roster then records the new session if it is listed, and otherwise no session.
 - **Terminal cannot be scripted** (macOS refuses the automation request, or Terminal reports an error): the tool returns that error text; `open` adds no slot.
-- **The roster file cannot be parsed, or carries a version this server does not know**: every tool refuses and names the file; the file is not rewritten.
-- **Two calls arrive at the same time**: typing into Terminal and updating the roster happen one call at a time, so two calls never interleave keystrokes or lose a roster update. Of two `open` calls for one name, one proceeds and the other is refused without opening a window. Two `adopt` calls for one name register the slot once.
+- **The roster file cannot be parsed, or carries a version this server does not know**: every tool other than `compact_self` refuses and names the file; the file is not rewritten. `compact_self` does not read the roster.
+- **Two calls arrive at the same time**: among the nine tools other than `compact_self`, typing into Terminal and updating the roster happen one call at a time, so two calls never interleave keystrokes or lose a roster update. Of two `open` calls for one name, one proceeds and the other is refused without opening a window. Two `adopt` calls for one name register the slot once. `compact_self` does not wait for those calls: it types only into the tab of the attached session, into which no other tool of the same server process types (claude-session-pool::REQ-001/AC-02).
 - **The window the server opened holds other tabs when `close` ends its session**: Terminal's scripting interface cannot close a single tab, and closing the window would end the other tabs, so the session's tab stays (claude-session-pool::US-006/AC-02).
-- **Two dispatcher sessions are started in the same directory**: they share that directory's roster. Every tool call reads the roster file afresh, so each sees the other's changes.
+- **Two dispatcher sessions are started in the same directory**: they share that directory's roster. Every call of the nine tools other than `compact_self` reads the roster file afresh, so each sees the other's changes.
 - **Text read from a Terminal window** (claude-session-pool::US-001/AC-06) is returned inside the error as quoted text; the server takes no action based on it.
 - **The dispatcher session ends while a `compact` call is waiting**: the wait is lost and no result is delivered; the compaction itself continues in the worker session, and a later `status` shows the slot's state.
 - **A session that is asked to end holds unsaved work**: `close` does not check for it; what a worker session must have finished before it is closed is decided by the dispatcher session.
+- **Text sits in the input box when `compact_self` types**: the command lands at the cursor, wherever in the text that is, and the text with the command in it is submitted as one message, which the model receives during the turn in progress; no compaction runs (claude-session-pool::US-008/AC-03). The server cannot discard the text first, because the interrupt that does so would end the turn that made the call.
+- **A prompt is on screen when `compact_self` is called**, for example because another tool call of the same turn waits for a permission answer: the session's state is `waiting`, and the tool refuses (claude-session-pool::US-008/AC-06). A Return typed then would answer the prompt (see "A session's state during a tool call"). The tool reads the session's state after it has found the tab, so that it runs no other program between that reading and the typing. A prompt that comes up after that reading is not detected, and the command is typed while it is on screen.
+- **The attached session does not run in a Terminal window** (another terminal application, an editor's terminal, the desktop application, a background or non-interactive session): the server still offers `compact_self` there, and the tool refuses (claude-session-pool::US-008/AC-06).
+- **Claude Code compacts the conversation on its own after `compact_self` typed the command**: that compaction is not the one the server waits for; it goes on waiting for the one the command starts.
+- **The session keeps working in the same turn after `compact_self` returned**: the command runs only when the turn ends, and the 30 minutes of claude-session-pool::US-008/AC-07 run from the typing.
+- **A subagent of the session calls `compact_self`**: the server cannot tell the call from one made by the session itself, and compacts the session.
+- **The dispatcher session clears or compacts a slot whose own `compact_self` is pending**: the two server processes do not coordinate. Each types under its own rules and reports only its own result.
+- **The `node` on a session's `PATH` is older than claude-session-pool::CON-004 requires**: the server does not start in that session, and Claude Code lists it as failed there. Other sessions are not affected.
+- **The owner gives the dispatcher session a name that a live session already has**: the start-up command does not check a name it was given (claude-session-pool::US-009/AC-05), and Claude Code accepts the duplicate. A message addressed to that name may then reach either session.
+- **A session resumed under claude-session-pool::US-009/AC-06 had no name**: Claude Code gives it a new generated name, as it does without the start-up command.
 
 ## Implementation Decisions
 
 ### Tools
 
-The server is named `claude-session-pool` and offers these tools. Every result is text.
+The server is named `claude-session-pool` and offers these tools, to the sessions that claude-session-pool::REQ-006 states. Every result is text.
 
 | Tool | Arguments |
 |---|---|
@@ -172,17 +227,27 @@ The server is named `claude-session-pool` and offers these tools. Every result i
 | `close` | `name`; `force`: optional boolean, default false |
 | `recycle` | `name`; `force`, `model`, `permissionMode`: optional |
 | `release` | `name` |
+| `compact_self` | none |
 
 ### Facts about Claude Code and Terminal the behaviour rests on
 
 - **Session listing.** `claude agents --json` prints one entry per session. The server uses `kind` (`interactive` or `background`), `pid`, `cwd`, `name`, `sessionId`, `status` (`idle`, `busy` or `waiting`) and `waitingFor`. A live session is an entry that has a `pid`.
 - **Which session a slot is.** A slot's session is the live `interactive` entry whose `name` equals the slot name and whose `cwd` is the pool directory. Directories are compared after resolving symbolic links.
-- **Which session the dispatcher is.** The dispatcher session is the entry whose `pid` is the server's parent process.
+- **Which session a server process is attached to.** Claude Code starts one server process for each session that loads the server. The attached session is the entry whose `pid` is the server's parent process.
+- **What a server process inherits.** A server process starts with the environment variables of its session.
+- **Which session is the dispatcher session.** The start-up command sets the environment variable `CLAUDE_SESSION_POOL_DISPATCHER_PID` to its own process ID and then replaces itself with `claude`, which keeps that process ID. A server process treats its attached session as a dispatcher session only when that variable equals the process ID of its parent. A session started from inside a dispatcher session inherits the variable and has another process ID.
 - **Which window hosts a session.** The session's process has a controlling terminal device; the hosting tab is the Terminal tab whose `tty` is that device.
 - **Opening.** Terminal's `do script` with no target opens a new window and runs a shell command in it. The command changes to the pool directory and replaces the shell with `claude -n <name> --model <model> --permission-mode <mode>`, so that no shell is left in the tab when the session ends.
-- **Typing.** Terminal's `do script <text> in <tab>` delivers the text followed by Return to the program in that tab. A typed command is the character U+0003 (Ctrl+C) followed by the command; Claude Code clears its input box on that character and stays running.
+- **Typing.** Terminal's `do script <text> in <tab>` delivers the text followed by Return to the program in that tab. A typed command is the character U+0003 (Ctrl+C) followed by the command; an idle Claude Code session clears its input box on that character and stays running. `continue` is typed in the same way. Claude Code takes a long text that arrives in one piece as pasted text: it leaves the text in the input box without submitting it, and a U+0003 in front of it does not empty the box. The three texts the server types, `/clear`, `/compact` and `continue`, are short enough to be taken as keystrokes.
+- **Typing during a turn.** The character U+0003 ends a turn in progress, so `compact_self` types `/compact` without it. Text typed during a turn goes into the input box at the cursor, and on Return the whole content of the box is queued; the transcript records it at once as a record with `"type": "queue-operation"`, `"operation": "enqueue"` and the queued text as `content`. With `fix the typo` in the box and the cursor before `typo`, a typed `/compact` is queued as `fix the /compacttypo`. A queued slash command runs when the turn ends. A queued text that is not a slash command is handed to the model during the turn in progress, before any queued slash command runs.
+- **A session's state during a tool call.** The session reports `busy` while one of its tool calls is in progress, and `waiting` while a prompt is on screen. A Return typed while a permission prompt is on screen accepts the answer the prompt highlights, which approves what the prompt asked about; text typed with it is not queued.
+- **After a compaction.** A compaction started by `/compact` leaves the session idle; nothing continues its work until a message arrives.
 - **Confirming a clear.** `/clear` gives the session a new `sessionId` and leaves its `pid` and `name` unchanged.
-- **Confirming a compaction.** A session's transcript is the file `<sessionId>.jsonl` in a subdirectory of `~/.claude/projects/`, with one JSON object per line. A finished compaction appends a record with `"type": "system"`, `"subtype": "compact_boundary"` and a `timestamp`. A line that is still being written is not valid JSON and is not counted; the server looks only at what was appended after the command was typed. Claude Code does not document this file as a stable interface; claude-session-pool::US-004/AC-04 covers the case where it cannot be read. A session reports `busy` while it compacts.
+- **Confirming a compaction.** A session's transcript is the file `<sessionId>.jsonl` in a subdirectory of `~/.claude/projects/`, with one JSON object per line. A finished compaction appends a record with `"type": "system"`, `"subtype": "compact_boundary"` and a `timestamp`. A line that is still being written is not valid JSON and is not counted; the server looks only at what was appended after the command was typed. The record's `compactMetadata.trigger` is `manual` for a compaction started by `/compact` and `auto` for one Claude Code started on its own; for `compact_self` the server counts a record unless it carries a `trigger` other than `manual`. Claude Code does not document this file as a stable interface; claude-session-pool::US-004/AC-04 and claude-session-pool::US-008/AC-06 cover the case where it cannot be read. A session reports `busy` while it compacts.
+- **Session names.** Claude Code gives a session that is started without a name a generated name, and generates a new one every time that session is started or resumed; the generated name is not stored. A name given with `-n` or `--name`, at a start or at a resume, or with `/rename`, is stored in the session's transcript as a record with `"type": "custom-title"` and the name as `customTitle`. Claude Code restores a stored name on every later resume and keeps it across `/clear`. A name given at a resume replaces a stored one. Claude Code accepts two live sessions under one name.
+- **Session IDs.** A session ID has the form of a UUID: 8, 4, 4, 4 and 12 hexadecimal digits joined by hyphens.
+- **Options of `claude` that resume a session or start none in the terminal.** By the help text of Claude Code 2.1.322: `--from-pr` resumes a session linked to a pull request; `--teleport` resumes a session that ran in the cloud; `--bg` and `--background` start the session in the background; `--cloud` and `--environment` create a cloud session, and `--cloud` can also attach to one; `--desktop` opens the session in the desktop application instead of the terminal.
+- **User-level registration.** A server registered at user scope is stored in `~/.claude.json` and loads in every project.
 - **Ending a session.** The server sends the session's process the termination signal; Claude Code exits on it. The server sends no other signal.
 - **Closing a window.** Terminal's `close` applies to a window; a tab does not accept it. On a window whose tab runs no process it closes the window without a confirmation. A closed window can still be listed for a short time with no tabs; the server treats a window with no tabs, or one that is not visible, as closed.
 
@@ -205,10 +270,23 @@ The server is named `claude-session-pool` and offers these tools. Every result i
 | A compaction record appearing once the session is idle again | 10 seconds |
 | A compaction being recorded | 30 minutes, or `timeoutMinutes` |
 | A session's process exiting | 15 seconds |
+| `/compact` being shown as queued after `compact_self` typed it | 10 seconds |
+| A compaction being recorded after `compact_self` typed the command | 30 minutes |
+| The session becoming idle once that compaction is recorded | 60 seconds |
 
 ### Start-up command
 
-The start-up command of claude-session-pool::CON-002 passes `claude` an MCP configuration that names this server, gives the absolute path of its entry file, sets `alwaysLoad` to true, and sets `timeout` to 86400000 milliseconds. Claude Code applies `timeout` as the wall-clock limit of one tool call and raises the time a call may stay silent to at least that value, so a `compact` wait is not cut short at Claude Code's default of 30 silent minutes. No tool call can outlast 24 hours.
+The start-up command of claude-session-pool::CON-002/AC-01 runs `claude` with the arguments it was given, followed by a name where claude-session-pool::US-009 calls for one, followed by an MCP configuration. Before it does so it marks the session as described under "Which session is the dispatcher session".
+
+The configuration names this server, gives the absolute path of its entry file, sets `alwaysLoad` to true, and sets `timeout` to 86400000 milliseconds. Claude Code applies `timeout` as the wall-clock limit of one tool call and raises the time a call may stay silent to at least that value, so a `compact` wait is not cut short at Claude Code's default of 30 silent minutes. No tool call can outlast 24 hours.
+
+The command looks for the transcript of a session it resumes as the server does: the file `<sessionId>.jsonl` in a subdirectory of `~/.claude/projects/`.
+
+### User-level registration
+
+The registration of claude-session-pool::CON-002/AC-02 is an entry named `claude-session-pool` at user scope with the same content as the configuration the start-up command passes: `command` is `node`, `args` holds the absolute path of the entry file, `alwaysLoad` is true and `timeout` is 86400000. Because the two entries are equal, a session that has both behaves the same whichever of them Claude Code uses.
+
+The owner creates it with `claude mcp add-json --scope user claude-session-pool '<entry as JSON>'` and removes it with `claude mcp remove --scope user claude-session-pool`.
 
 ## Out of Scope
 
@@ -219,3 +297,8 @@ The start-up command of claude-session-pool::CON-002 passes `claude` an MCP conf
 - **Terminals other than Terminal.**
 - **Changing the owner's permission settings.** No auto-mode rule is added or proposed by the server.
 - **A pool that spans several directories.**
+- **Compacting another session with `compact_self`.** The tool has no argument that names a session; a dispatcher session compacts a slot with `compact`.
+- **Choosing what is typed after a self-compaction.** It is always `continue`; what the session does next is its own decision.
+- **Creating the user-level registration.** The owner creates and removes it.
+- **Running `claude` subcommands through the start-up command.** The command adds its arguments to whatever it is given, as for a session start, and a subcommand such as `agents` or `mcp` rejects them. Subcommands are run with `claude` itself.
+- **Names of sessions other than the dispatcher session.** A worker session the server opens is named after its slot; a session the owner starts or adopts keeps whatever name Claude Code or the owner gave it.

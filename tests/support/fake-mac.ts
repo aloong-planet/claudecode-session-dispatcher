@@ -2,7 +2,17 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Clock, Launch, Processes, SessionEntry, SessionLister, TabRef, Terminal } from "../../src/ports.ts";
 
-export type FakeSession = SessionEntry & { tty?: string; model?: string; permissionMode?: string };
+export type FakeSession = SessionEntry & {
+  tty?: string;
+  model?: string;
+  permissionMode?: string;
+  /** Text that sits in the session's input box, not yet submitted. */
+  inputBox?: string;
+  /** Where the cursor sits in `inputBox`, counted from its start. Left out: at its end. */
+  cursor?: number;
+  /** Texts that were submitted during a turn and wait for it to end. */
+  queued?: string[];
+};
 
 type FakeWindow = { id: number; tty: string; open: boolean; tabCount: number; text: string };
 
@@ -15,7 +25,8 @@ export class FakeMac {
   sessions: FakeSession[] = [];
   windows: FakeWindow[] = [];
   launches: Launch[] = [];
-  typed: { at: number; windowId: number; tab: number; command: string }[] = [];
+  /** Everything typed into a tab. `interrupt` tells whether the input box was discarded first. */
+  typed: { at: number; windowId: number; tab: number; command: string; interrupt: boolean }[] = [];
   terminated: number[] = [];
   closedWindows: number[] = [];
 
@@ -25,6 +36,8 @@ export class FakeMac {
   clearEffect: "new-session-id" | "nothing" = "new-session-id";
   /** What a typed `/compact` does. */
   compactEffect: "compacts" | "nothing" | "busy-then-idle" | "busy-forever" = "compacts";
+  /** Whether a text typed during a turn is recorded in the transcript as queued. */
+  recordsQueue = true;
   /** Whether a session ends when asked to. */
   endsWhenAsked = true;
   /** Where compaction records are appended: `<transcriptRoot>/<project>/<sessionId>.jsonl`. */
@@ -41,6 +54,8 @@ export class FakeMac {
   listingFailure: string | undefined;
   /** How long typing one command takes. */
   typingMs = 0;
+  /** How long finding the tab on a terminal device takes. */
+  tabLookupMs = 0;
   /** The largest number of commands that were being typed at the same moment. */
   mostTypingAtOnce = 0;
 
@@ -83,20 +98,41 @@ export class FakeMac {
       }
       return { windowId: window.id, tty: window.tty };
     }),
-    findTab: (tty) => soon(() => {
+    findTab: async (tty) => {
       this.failIfTerminalBroken();
+      if (this.tabLookupMs > 0) await this.clock.sleep(this.tabLookupMs);
       const window = this.windows.find((candidate) => candidate.open && candidate.tty === tty);
       return window && { windowId: window.id, tab: 1, tabCount: window.tabCount };
-    }),
+    },
     typeCommand: async (tab, command) => {
       this.failIfTerminalBroken();
       this.typingNow += 1;
       this.mostTypingAtOnce = Math.max(this.mostTypingAtOnce, this.typingNow);
       if (this.typingMs > 0) await this.clock.sleep(this.typingMs);
       this.typingNow -= 1;
-      this.typed.push({ at: this.now, windowId: tab.windowId, tab: tab.tab, command });
+      this.typed.push({ at: this.now, windowId: tab.windowId, tab: tab.tab, command, interrupt: true });
+      const session = this.sessionIn(tab);
+      if (session) session.inputBox = undefined;
       this.applyTyped(tab, command);
     },
+    typeText: (tab, text) => soon(() => {
+      this.failIfTerminalBroken();
+      this.typed.push({ at: this.now, windowId: tab.windowId, tab: tab.tab, command: text, interrupt: false });
+      const session = this.sessionIn(tab);
+      if (!session) return;
+      // Claude Code puts what is typed at the cursor of whatever already sits in the input box, and submits the whole.
+      const box = session.inputBox ?? "";
+      const cursor = session.cursor ?? box.length;
+      const submitted = `${box.slice(0, cursor)}${text}${box.slice(cursor)}`;
+      session.inputBox = undefined;
+      session.cursor = undefined;
+      if (session.status !== "busy") {
+        this.applyTyped(tab, submitted);
+        return;
+      }
+      (session.queued ??= []).push(submitted);
+      if (this.recordsQueue) this.appendQueueRecord(session.sessionId!, "enqueue", submitted);
+    }),
     lastLines: (windowId) =>
       soon(() => {
         if (this.contentsFailure) throw new Error(this.contentsFailure);
@@ -158,6 +194,14 @@ export class FakeMac {
     this.sessions = this.sessions.filter((session) => session.pid !== pid);
   }
 
+  /** Ends the turn a session is in. A `/compact` that was queued during the turn then runs, as it does in Claude Code. */
+  endTurn(session: FakeSession): void {
+    const queued = session.queued ?? [];
+    session.queued = [];
+    session.status = "idle";
+    if (queued.includes("/compact")) this.compact(session, 0);
+  }
+
   windowOf(session: FakeSession): FakeWindow {
     const window = this.windows.find((candidate) => candidate.tty === session.tty);
     if (!window) throw new Error(`fake session ${session.name} has no window`);
@@ -169,8 +213,14 @@ export class FakeMac {
   }
 
   /** Appends a record shaped like the one Claude Code 2.1.318 writes when a compaction finishes. */
-  appendCompactionRecord(sessionId: string): void {
-    appendFileSync(this.transcriptPath(sessionId), `${JSON.stringify(compactionRecord(sessionId))}\n`);
+  appendCompactionRecord(sessionId: string, trigger: "manual" | "auto" = "manual"): void {
+    appendFileSync(this.transcriptPath(sessionId), `${JSON.stringify(compactionRecord(sessionId, trigger))}\n`);
+  }
+
+  /** Appends a record shaped like the one Claude Code 2.1.322 writes when a text is put on, or taken off, a session's queue. */
+  appendQueueRecord(sessionId: string, operation: "enqueue" | "dequeue", content?: string): void {
+    const record = { type: "queue-operation", operation, timestamp: "2026-11-11T06:41:11.708Z", sessionId, content };
+    appendFileSync(this.transcriptPath(sessionId), `${JSON.stringify(record)}\n`);
   }
 
   /** Appends an ordinary record, as every turn does. */
@@ -186,26 +236,34 @@ export class FakeMac {
     return join(directory, `${sessionId}.jsonl`);
   }
 
-  private applyTyped(tab: TabRef, command: string): void {
+  private sessionIn(tab: TabRef): FakeSession | undefined {
     const window = this.windows.find((candidate) => candidate.id === tab.windowId);
-    const session = this.sessions.find((candidate) => candidate.tty === window?.tty);
+    return this.sessions.find((candidate) => candidate.tty === window?.tty);
+  }
+
+  private applyTyped(tab: TabRef, command: string): void {
+    const session = this.sessionIn(tab);
     if (!session) return;
     if (command === "/clear" && this.clearEffect === "new-session-id") {
       this.at(1000, () => {
         session.sessionId = this.newSessionId();
       });
     }
-    if (command === "/compact" && this.compactEffect !== "nothing") {
-      const sessionId = session.sessionId!;
-      this.at(1000, () => {
-        session.status = "busy";
-      });
-      if (this.compactEffect === "busy-forever") return;
-      this.at(8000, () => {
-        if (this.compactEffect === "compacts") this.appendCompactionRecord(sessionId);
-        session.status = "idle";
-      });
-    }
+    if (command === "/compact") this.compact(session, 1000);
+  }
+
+  /** What `/compact` does to a session, starting `startsInMs` after the command reaches it. */
+  private compact(session: FakeSession, startsInMs: number): void {
+    if (this.compactEffect === "nothing") return;
+    const sessionId = session.sessionId!;
+    this.at(startsInMs, () => {
+      session.status = "busy";
+    });
+    if (this.compactEffect === "busy-forever") return;
+    this.at(startsInMs + 7000, () => {
+      if (this.compactEffect === "compacts") this.appendCompactionRecord(sessionId);
+      session.status = "idle";
+    });
   }
 
   private sessionFromLaunch(launch: Launch, tty: string): FakeSession {
@@ -265,7 +323,7 @@ function soon<T>(compute: () => T): Promise<T> {
   });
 }
 
-function compactionRecord(sessionId: string): Record<string, unknown> {
+function compactionRecord(sessionId: string, trigger: "manual" | "auto"): Record<string, unknown> {
   return {
     parentUuid: null,
     logicalParentUuid: "88c6cc0e-f025-4c3a-aa3d-586c335ac6c2",
@@ -274,7 +332,7 @@ function compactionRecord(sessionId: string): Record<string, unknown> {
     subtype: "compact_boundary",
     content: "Conversation compacted",
     level: "info",
-    compactMetadata: { trigger: "manual", preTokens: 57902, postTokens: 10660, cumulativeDroppedTokens: 47242, durationMs: 8908 },
+    compactMetadata: { trigger, preTokens: 57902, postTokens: 10660, cumulativeDroppedTokens: 47242, durationMs: 8908 },
     uuid: "dec74024-2aa2-441e-8dad-edb5e073e5db",
     timestamp: "2026-11-10T15:23:20.408Z",
     userType: "external",

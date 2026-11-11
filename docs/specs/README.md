@@ -6,4 +6,4 @@ A spec states product behaviour, facts about the external systems the feature re
 
 | Spec | In one line |
 |---|---|
-| [claude-session-pool](claude-session-pool.md) | An MCP server through which a dispatcher session opens, adopts, clears, compacts, inspects, closes, replaces and releases worker sessions running in Terminal windows. |
+| [claude-session-pool](claude-session-pool.md) | An MCP server through which a dispatcher session opens, adopts, clears, compacts, inspects, closes, replaces and releases worker sessions running in Terminal windows, and which offers every session that has it a tool to compact its own conversation and carry on. |

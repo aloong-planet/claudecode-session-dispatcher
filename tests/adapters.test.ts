@@ -166,10 +166,10 @@ describe("Terminal", () => {
     expect(await recording("\n").terminal.findTab("/dev/ttys999")).toBeUndefined();
   });
 
-  it("passes the window, the tab and the command to type as separate arguments", async () => {
+  it.each(["typeCommand", "typeText"] as const)("%s passes the window, the tab and the text to type as separate arguments", async (method) => {
     const { calls, terminal } = recording("tab 1 of window id 165153\n");
 
-    await terminal.typeCommand({ windowId: 165153, tab: 1, tabCount: 1 }, "/clear");
+    await terminal[method]({ windowId: 165153, tab: 1, tabCount: 1 }, "/clear");
 
     expect(calls[0]!.args.slice(-3)).toEqual(["165153", "1", "/clear"]);
   });
@@ -271,5 +271,90 @@ describe("transcripts", () => {
     rmSync(path);
 
     expect(transcripts.compactedSince(mark)).toBe(false);
+  });
+
+  it.each([
+    { trigger: "auto", counts: false },
+    { trigger: "manual", counts: true },
+    { trigger: undefined, counts: true },
+  ])("counts a compaction with trigger $trigger as requested: $counts", ({ trigger, counts }) => {
+    const { path, transcripts } = transcript();
+    const mark = transcripts.mark(sessionId)!;
+    const metadata: Record<string, unknown> = { ...compaction.compactMetadata, trigger };
+    if (trigger === undefined) delete metadata.trigger;
+    const record = { ...compaction, compactMetadata: metadata };
+
+    appendFileSync(path, `${JSON.stringify(record)}\n`);
+
+    expect(transcripts.compactedSince(mark, "requested")).toBe(counts);
+    expect(transcripts.compactedSince(mark)).toBe(true);
+  });
+
+  // Shaped like the records Claude Code 2.1.322 wrote on 2026-11-11 when text was typed into a session during a turn.
+  const queued = (content: string) => ({ type: "queue-operation", operation: "enqueue", timestamp: "2026-11-11T06:41:11.708Z", sessionId, content });
+  const absorbed = (content: string) => ({
+    type: "queue-operation",
+    operation: "remove",
+    timestamp: "2026-11-11T06:41:34.602Z",
+    sessionId,
+    content,
+    reason: "absorbed_mid_turn",
+    commandUuid: "2f09f33c-434f-4560-ba8f-00ae5f9c8e33",
+    deliveryId: "3fd41113-4aa3-45c0-93d2-ac28f9a12d37",
+  });
+  const dequeued = { type: "queue-operation", operation: "dequeue", timestamp: "2026-11-11T06:41:35.002Z", sessionId };
+
+  it("reads the texts queued after the mark, in order, and nothing that was only taken off the queue", () => {
+    const { path, transcripts } = transcript();
+    appendFileSync(path, `${JSON.stringify(queued("before the mark"))}\n`);
+    const mark = transcripts.mark(sessionId)!;
+    expect(transcripts.queuedSince(mark)).toEqual([]);
+
+    appendFileSync(path, [queued("half typed/compact"), absorbed("half typed/compact"), turn, queued("/compact"), dequeued].map((record) => JSON.stringify(record)).join("\n") + "\n");
+
+    expect(transcripts.queuedSince(mark)).toEqual(["half typed/compact", "/compact"]);
+  });
+
+  it("does not read a queued text whose record is still being written", () => {
+    const { path, transcripts } = transcript();
+    const mark = transcripts.mark(sessionId)!;
+    const line = JSON.stringify(queued("/compact"));
+
+    appendFileSync(path, line.slice(0, 60));
+    expect(transcripts.queuedSince(mark)).toEqual([]);
+
+    appendFileSync(path, `${line.slice(60)}\n`);
+    expect(transcripts.queuedSince(mark)).toEqual(["/compact"]);
+  });
+
+  // Shaped like the records Claude Code 2.1.322 wrote on 2026-11-11 for a session started with `-n` and later renamed.
+  const named = (customTitle: string) => [
+    { type: "custom-title", customTitle, sessionId },
+    { type: "agent-name", agentName: customTitle, sessionId },
+  ];
+  const mentioning = {
+    type: "user",
+    message: { role: "user", content: 'The record {"type":"custom-title","customTitle":"x"} is how a name is kept.' },
+    sessionId,
+  };
+
+  it.each([
+    { what: "a name given at the start and replaced later", records: [...named("probe-keep-1"), turn, ...named("probe-keep-1b")], state: "named" },
+    { what: "no name record", records: [turn, summary], state: "unnamed" },
+    { what: "a message that only quotes a name record", records: [mentioning], state: "unnamed" },
+    { what: "a name record that is empty", records: [{ type: "custom-title", customTitle: "", sessionId }], state: "unnamed" },
+  ])("tells whether a session was given a name: $what is $state", ({ records, state }) => {
+    const { path, transcripts } = transcript();
+    appendFileSync(path, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+
+    expect(transcripts.nameState(sessionId)).toBe(state);
+  });
+
+  it("cannot tell whether a session was given a name when its transcript is not found", () => {
+    const { transcripts } = transcript();
+
+    expect(transcripts.nameState("00000000-0000-4000-8000-000000000000")).toBe("unknown");
+    expect(transcripts.nameState("../escape")).toBe("unknown");
+    expect(new FileTranscripts(join(tmpdir(), "no-such-root-for-claude-session-pool")).nameState(sessionId)).toBe("unknown");
   });
 });

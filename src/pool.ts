@@ -1,9 +1,8 @@
 import { realpathSync } from "node:fs";
 import type { Clock, Processes, SessionEntry, SessionLister, TabRef, Terminal, TranscriptMark, Transcripts } from "./ports.ts";
+import { type Outcome, attempt, describeSession, messageOf } from "./report.ts";
 import { RosterStore, type Slot } from "./roster.ts";
 import { Refusal, checkModel, checkPermissionMode, checkSlotName, checkTimeoutMinutes } from "./validate.ts";
-
-export type Outcome = { ok: boolean; text: string };
 
 export type PoolDeps = {
   /** The pool directory: where the dispatcher session was started. */
@@ -456,23 +455,6 @@ export class Pool {
     this.queue = result.catch(() => undefined);
     return result;
   }
-}
-
-function describeSession(session: SessionEntry): string {
-  if (session.status === "waiting") return session.waitingFor ? `waiting for ${session.waitingFor}` : "waiting";
-  return session.status ?? "in an unknown state";
-}
-
-async function attempt(action: () => Promise<string>): Promise<Outcome> {
-  try {
-    return { ok: true, text: await action() };
-  } catch (error) {
-    return { ok: false, text: messageOf(error) };
-  }
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function quoted(text: string): string {
