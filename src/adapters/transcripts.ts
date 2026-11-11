@@ -25,13 +25,8 @@ export class FileTranscripts implements Transcripts {
     }
   }
 
-  compactedSince(mark: TranscriptMark, which: "any" | "requested" = "any"): boolean {
-    return recordsSince(mark, "compact_boundary").some((record) => {
-      if (record.type !== "system" || record.subtype !== "compact_boundary") return false;
-      if (which === "any") return true;
-      const trigger = (record.compactMetadata as { trigger?: unknown } | undefined)?.trigger;
-      return trigger === undefined || trigger === "manual";
-    });
+  compactedSince(mark: TranscriptMark): boolean {
+    return recordsSince(mark, "compact_boundary").some((record) => record.type === "system" && record.subtype === "compact_boundary");
   }
 
   queuedSince(mark: TranscriptMark): string[] {

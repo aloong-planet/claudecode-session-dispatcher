@@ -1,0 +1,14 @@
+{
+  "name": "cc-session-pool",
+  "description": "The cc-session-pool plugin, used in place from this repository.",
+  "owner": {
+    "name": "zhoulf1006"
+  },
+  "plugins": [
+    {
+      "name": "cc-session-pool",
+      "source": "./plugin",
+      "description": "Gives every session a tool to compact its own conversation and a hook that wakes it afterwards, and gives a dispatcher session the tools that manage its worker sessions in Terminal windows."
+    }
+  ]
+}

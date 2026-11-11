@@ -11,9 +11,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileTranscripts } from "../src/adapters/transcripts.ts";
+import { runHook } from "../src/hooks.ts";
 import { createServer } from "../src/mcp.ts";
 import { Pool } from "../src/pool.ts";
 import { SelfCompaction } from "../src/self-compaction.ts";
+import { WakeState } from "../src/wake.ts";
 import { FakeMac } from "./support/fake-mac.ts";
 
 const temporaryDirectories: string[] = [];
@@ -35,6 +37,9 @@ async function connect({ dispatcher } = { dispatcher: true }) {
   const mac = new FakeMac();
   fakes.push(mac);
   mac.transcriptRoot = transcriptRoot;
+  const wake = new WakeState(join(home, "state"));
+  // The plugin's hooks run in the sessions of this Mac, so the attached session has a hook record.
+  mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid) });
   const attached = mac.addSession({ name: "attached", cwd: directory, pid: ATTACHED_PID, status: "busy" });
   mac.appendTurnRecord(attached.sessionId!);
   const adapters = {
@@ -44,7 +49,7 @@ async function connect({ dispatcher } = { dispatcher: true }) {
     transcripts: new FileTranscripts(transcriptRoot),
     clock: mac.clock,
   };
-  const selfCompaction = new SelfCompaction({ sessionPid: ATTACHED_PID, ...adapters });
+  const selfCompaction = new SelfCompaction({ sessionPid: ATTACHED_PID, wake, ...adapters });
   const pool = dispatcher ? new Pool({ directory, dispatcherPid: ATTACHED_PID, rosterRoot: join(home, "rosters"), ...adapters }) : undefined;
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await createServer({ selfCompaction, pool }).connect(serverSide);

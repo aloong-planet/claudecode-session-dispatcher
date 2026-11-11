@@ -1,10 +1,10 @@
 #!/bin/sh
-# Starts a Claude Code session as a dispatcher session: the claude-session-pool server is attached to it with the
-# pool's tools, and it gets a name that survives a restart.
+# Starts a Claude Code session as a dispatcher session: the cc-session-pool plugin is loaded for it, its server
+# offers it the pool's tools, and it gets a name that survives a restart.
 # Every argument is passed on to `claude`, for example: claude-dispatcher --resume <session-id>
 set -eu
 
-# The arguments to add, one to a line: a name where one is called for, then the MCP configuration.
+# The arguments to add, one to a line: a name where one is called for, then the plugin's directory.
 added=$(node -e '
 const { realpathSync } = require("node:fs");
 const { dirname, join } = require("node:path");

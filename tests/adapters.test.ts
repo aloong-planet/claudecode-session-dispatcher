@@ -273,23 +273,6 @@ describe("transcripts", () => {
     expect(transcripts.compactedSince(mark)).toBe(false);
   });
 
-  it.each([
-    { trigger: "auto", counts: false },
-    { trigger: "manual", counts: true },
-    { trigger: undefined, counts: true },
-  ])("counts a compaction with trigger $trigger as requested: $counts", ({ trigger, counts }) => {
-    const { path, transcripts } = transcript();
-    const mark = transcripts.mark(sessionId)!;
-    const metadata: Record<string, unknown> = { ...compaction.compactMetadata, trigger };
-    if (trigger === undefined) delete metadata.trigger;
-    const record = { ...compaction, compactMetadata: metadata };
-
-    appendFileSync(path, `${JSON.stringify(record)}\n`);
-
-    expect(transcripts.compactedSince(mark, "requested")).toBe(counts);
-    expect(transcripts.compactedSince(mark)).toBe(true);
-  });
-
   // Shaped like the records Claude Code 2.1.322 wrote on 2026-11-11 when text was typed into a session during a turn.
   const queued = (content: string) => ({ type: "queue-operation", operation: "enqueue", timestamp: "2026-11-11T06:41:11.708Z", sessionId, content });
   const absorbed = (content: string) => ({

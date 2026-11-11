@@ -1,0 +1,18 @@
+{
+  "name": "cc-session-pool",
+  "version": "0.1.0",
+  "description": "Gives every session a tool to compact its own conversation and a hook that wakes it afterwards, and gives a dispatcher session the tools that manage its worker sessions in Terminal windows.",
+  "author": {
+    "name": "zhoulf1006"
+  },
+  "mcpServers": {
+    "pool": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/../src/server.ts"
+      ],
+      "alwaysLoad": true,
+      "timeout": 86400000
+    }
+  }
+}

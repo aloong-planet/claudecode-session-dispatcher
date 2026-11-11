@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeJsonFile } from "./json-file.ts";
 import { Refusal } from "./validate.ts";
 
 export type Slot = {
@@ -47,10 +48,7 @@ export class RosterStore {
   }
 
   write(slots: Slot[]): void {
-    mkdirSync(dirname(this.path), { recursive: true });
-    const temporary = `${this.path}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify({ version: VERSION, directory: this.directory, slots }, null, 2)}\n`);
-    renameSync(temporary, this.path);
+    writeJsonFile(this.path, { version: VERSION, directory: this.directory, slots });
   }
 
   private unusable(reason: string): Refusal {

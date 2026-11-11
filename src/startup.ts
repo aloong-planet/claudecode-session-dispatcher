@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { ClaudeCli } from "./adapters/claude-cli.ts";
 import { run } from "./adapters/exec.ts";
 import { FileTranscripts, type NameState } from "./adapters/transcripts.ts";
@@ -10,8 +10,8 @@ import { Refusal } from "./validate.ts";
 export type StartupDeps = {
   /** The directory the start-up command is run in. */
   directory: string;
-  /** The absolute path of the server's entry file. */
-  entry: string;
+  /** The absolute path of the plugin's directory. */
+  pluginDirectory: string;
   sessions: SessionLister;
   /** Whether the transcript of a session shows a name that was given to it. */
   nameState: (sessionId: string) => NameState;
@@ -33,13 +33,18 @@ const LEAVES_THE_NAME_ALONE = new Set([
 
 /**
  * The arguments the start-up command adds after the ones it was given: a name where the dispatcher session would
- * otherwise get a generated one, then the MCP configuration that attaches this server.
+ * otherwise get a generated one, then the plugin, loaded for this session only.
  */
 export async function startupArguments(given: string[], deps: StartupDeps): Promise<string[]> {
-  const server = { command: "node", args: [deps.entry], alwaysLoad: true, timeout: 86_400_000 };
-  const configuration = ["--mcp-config", JSON.stringify({ mcpServers: { "claude-session-pool": server } })];
+  // The path travels to `claude` on a line of its own, so a line break in it would turn into further arguments.
+  if (/\p{Cc}/u.test(deps.pluginDirectory)) {
+    throw new Refusal(
+      `The path of the plugin's directory, ${JSON.stringify(deps.pluginDirectory)}, contains a control character, so it could not be passed to claude. Nothing was started.`,
+    );
+  }
+  const plugin = ["--plugin-dir", deps.pluginDirectory];
   // One word, so that a name that starts with a hyphen is not read as an option.
-  return callsForDefaultName(given, deps) ? [`--name=${await defaultName(deps)}`, ...configuration] : configuration;
+  return callsForDefaultName(given, deps) ? [`--name=${await defaultName(deps)}`, ...plugin] : plugin;
 }
 
 function callsForDefaultName(given: string[], deps: StartupDeps): boolean {
@@ -105,7 +110,7 @@ export async function main(given: string[]): Promise<void> {
     const transcripts = new FileTranscripts(join(homedir(), ".claude", "projects"));
     const added = await startupArguments(given, {
       directory: process.cwd(),
-      entry: join(import.meta.dirname, "server.ts"),
+      pluginDirectory: join(dirname(import.meta.dirname), "plugin"),
       sessions: new ClaudeCli(run),
       nameState: (sessionId) => transcripts.nameState(sessionId),
       notice: (line) => console.error(line),

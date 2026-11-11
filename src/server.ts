@@ -9,6 +9,8 @@ import { FileTranscripts } from "./adapters/transcripts.ts";
 import { createServer } from "./mcp.ts";
 import { Pool } from "./pool.ts";
 import { SelfCompaction } from "./self-compaction.ts";
+import { STATE_DIRECTORY } from "./state-directory.ts";
+import { WakeState } from "./wake.ts";
 
 /** The environment variable in which the start-up command leaves the process ID of the session it starts. */
 const DISPATCHER_MARK = "CLAUDE_SESSION_POOL_DISPATCHER_PID";
@@ -30,12 +32,12 @@ const adapters = {
 const startedByStartupCommand = process.env[DISPATCHER_MARK] === String(sessionPid);
 
 await createServer({
-  selfCompaction: new SelfCompaction({ sessionPid, ...adapters }),
+  selfCompaction: new SelfCompaction({ sessionPid, wake: new WakeState(STATE_DIRECTORY), ...adapters }),
   pool: startedByStartupCommand
     ? new Pool({
         directory: process.env.CLAUDE_PROJECT_DIR ?? process.cwd(),
         dispatcherPid: sessionPid,
-        rosterRoot: join(homedir(), ".claude-session-pool"),
+        rosterRoot: STATE_DIRECTORY,
         ...adapters,
       })
     : undefined,

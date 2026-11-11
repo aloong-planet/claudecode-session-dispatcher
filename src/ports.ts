@@ -58,8 +58,8 @@ export type TranscriptMark = {
 export interface Transcripts {
   /** The current end of the session's transcript, or undefined when it cannot be found or read. */
   mark(sessionId: string): TranscriptMark | undefined;
-  /** Whether a finished compaction was recorded after `mark`. With "requested", one that Claude Code started on its own does not count. */
-  compactedSince(mark: TranscriptMark, which?: "any" | "requested"): boolean;
+  /** Whether a finished compaction was recorded after `mark`. */
+  compactedSince(mark: TranscriptMark): boolean;
   /** The texts that were queued for the session after `mark`, oldest first. */
   queuedSince(mark: TranscriptMark): string[];
 }

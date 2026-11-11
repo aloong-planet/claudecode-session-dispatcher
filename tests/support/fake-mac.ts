@@ -56,6 +56,15 @@ export class FakeMac {
   typingMs = 0;
   /** How long finding the tab on a terminal device takes. */
   tabLookupMs = 0;
+  /** Makes typing fail with this message, while the rest of Terminal keeps working. */
+  typingFailure: string | undefined;
+  /**
+   * The plugin's hook program, as Claude Code runs it in every session: it is given the event and the process ID of
+   * the session. Left out: the plugin's hooks do not run.
+   */
+  hooks: ((input: Record<string, unknown>, sessionPid: number) => { exitCode: number; stderr: string }) | undefined;
+  /** Every turn a hook started by waking a session: when, in which session, and what the model was handed. */
+  woken: { at: number; pid: number; sessionId: string; text: string }[] = [];
   /** The largest number of commands that were being typed at the same moment. */
   mostTypingAtOnce = 0;
 
@@ -94,7 +103,10 @@ export class FakeMac {
         this.sessions.push({ ...session, status: "busy" });
         window.text = "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit";
       } else {
-        this.at(this.startupMs, () => this.sessions.push(session));
+        this.at(this.startupMs, () => {
+          this.sessions.push(session);
+          this.sessionStarted(session, "startup");
+        });
       }
       return { windowId: window.id, tty: window.tty };
     }),
@@ -106,6 +118,7 @@ export class FakeMac {
     },
     typeCommand: async (tab, command) => {
       this.failIfTerminalBroken();
+      if (this.typingFailure) throw new Error(this.typingFailure);
       this.typingNow += 1;
       this.mostTypingAtOnce = Math.max(this.mostTypingAtOnce, this.typingNow);
       if (this.typingMs > 0) await this.clock.sleep(this.typingMs);
@@ -117,6 +130,7 @@ export class FakeMac {
     },
     typeText: (tab, text) => soon(() => {
       this.failIfTerminalBroken();
+      if (this.typingFailure) throw new Error(this.typingFailure);
       this.typed.push({ at: this.now, windowId: tab.windowId, tab: tab.tab, command: text, interrupt: false });
       const session = this.sessionIn(tab);
       if (!session) return;
@@ -181,6 +195,7 @@ export class FakeMac {
       ...overrides,
     };
     this.sessions.push(session);
+    this.sessionStarted(session, "startup");
     return session;
   }
 
@@ -200,6 +215,12 @@ export class FakeMac {
     session.queued = [];
     session.status = "idle";
     if (queued.includes("/compact")) this.compact(session, 0);
+  }
+
+  /** A compaction that Claude Code starts on its own, finished at once. */
+  compactOnItsOwn(session: FakeSession): void {
+    this.appendCompactionRecord(session.sessionId!, "auto");
+    this.compactionFinished(session, "auto");
   }
 
   windowOf(session: FakeSession): FakeWindow {
@@ -247,6 +268,7 @@ export class FakeMac {
     if (command === "/clear" && this.clearEffect === "new-session-id") {
       this.at(1000, () => {
         session.sessionId = this.newSessionId();
+        this.sessionStarted(session, "clear");
       });
     }
     if (command === "/compact") this.compact(session, 1000);
@@ -263,7 +285,26 @@ export class FakeMac {
     this.at(startsInMs + 7000, () => {
       if (this.compactEffect === "compacts") this.appendCompactionRecord(sessionId);
       session.status = "idle";
+      if (this.compactEffect === "compacts") this.compactionFinished(session, "manual");
     });
+  }
+
+  /** Claude Code runs the plugin's `SessionStart` hook whenever a session starts on a conversation. */
+  private sessionStarted(session: FakeSession, source: "startup" | "clear" | "compact"): void {
+    this.hooks?.({ hook_event_name: "SessionStart", session_id: session.sessionId, source }, session.pid!);
+  }
+
+  /**
+   * Claude Code runs the plugin's hooks when a compaction has finished. A `PostCompact` hook that exits with code 2
+   * makes the idle session start a turn, as one declared with `asyncRewake` was seen to do on Claude Code 2.1.322.
+   */
+  private compactionFinished(session: FakeSession, trigger: "manual" | "auto"): void {
+    if (!this.hooks || !this.sessions.includes(session)) return;
+    this.sessionStarted(session, "compact");
+    const result = this.hooks({ hook_event_name: "PostCompact", session_id: session.sessionId, trigger }, session.pid!);
+    if (result.exitCode !== 2) return;
+    this.woken.push({ at: this.now, pid: session.pid!, sessionId: session.sessionId!, text: result.stderr });
+    session.status = "busy";
   }
 
   private sessionFromLaunch(launch: Launch, tty: string): FakeSession {
