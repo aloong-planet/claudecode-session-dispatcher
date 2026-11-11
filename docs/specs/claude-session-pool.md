@@ -8,7 +8,7 @@ A dispatcher session hands tickets to worker sessions and receives their reports
 
 ## Solution
 
-An MCP server attached to the dispatcher session alone. Through its tools the dispatcher session opens worker sessions in Terminal windows, registers ones the owner opened, resets or compacts a worker session's conversation by typing the command into its window, reads the real state of every slot, and closes or replaces a worker session. None of these steps needs the owner.
+An MCP server attached to the dispatcher session alone. Through its tools the dispatcher session opens worker sessions in Terminal windows, registers ones the owner opened, resets or compacts a worker session's conversation by typing the command into its window, reads the real state of every slot, closes or replaces a worker session, and takes a slot off the roster. None of these steps needs the owner.
 
 ## User Stories
 
@@ -60,19 +60,25 @@ As a dispatcher session, I read the current state of every slot, so that I notic
 
 As a dispatcher session, I close a worker session I no longer need and replace one that is stuck, so that the owner does not close windows or restart sessions.
 
-- claude-session-pool::US-006/AC-01: `close` on an idle slot ends its session's process, waits for the process to exit, and removes the slot from the roster. When the server opened the slot's Terminal window, `close` also closes that window.
-- claude-session-pool::US-006/AC-02: `close` on a slot the server adopted ends the session and leaves the owner's Terminal window open.
+- claude-session-pool::US-006/AC-01: `close` on an idle slot ends its session's process, waits for the process to exit, and removes the slot from the roster. When the session it ended is the one the server opened for the slot, and its Terminal window has no other tab, `close` also closes that window.
+- claude-session-pool::US-006/AC-02: `close` leaves the Terminal window open, and says so in its result, in each of these cases: the server adopted the slot; the owner started the slot's session by hand after the one the server opened had ended; the window has other tabs, in which case the session's tab stays in it.
 - claude-session-pool::US-006/AC-03: `close` on a slot that is `busy` or `waiting` refuses and states the slot's state, unless the `force` argument is true; with `force` true it proceeds as for an idle slot.
 - claude-session-pool::US-006/AC-04: `close` on a `gone` slot removes it from the roster and succeeds.
 - claude-session-pool::US-006/AC-05: When the session's process has not exited 15 seconds after `close` asked it to end, `close` returns an error, keeps the slot in the roster, and closes no window. This holds with `force` true as well.
 - claude-session-pool::US-006/AC-06: `recycle` closes the slot as `close` does, with the same `force` rule, and then opens a new worker session under the same name as `open` does; it takes the `model` and `permissionMode` arguments of `open`, with the same defaults. The slot then holds a new process and a new conversation.
-- claude-session-pool::US-006/AC-07: When the close step of `recycle` refuses or fails, nothing is opened. When the close step succeeds and the open step fails, the slot stays in the roster, is `gone`, and the error says so.
+- claude-session-pool::US-006/AC-07: When the close step of `recycle` refuses or fails, nothing is opened. When the close step succeeds and the open step fails, the slot stays in the roster and the error states the slot's state at that moment: `gone` when no new session exists, `busy` or `waiting` when one started and was not idle within 60 seconds. In the second case the new session's window counts as opened by the server.
+
+### claude-session-pool::US-007 Undo a registration
+
+As a dispatcher session, I take a slot off the roster and leave its session as it is, so that a wrong `adopt` or `open` can be undone without ending anyone's work.
+
+- claude-session-pool::US-007/AC-01: `release` removes the slot from the roster, whatever the slot's state, and does not type into, end or close anything.
 
 ## Functional Requirements
 
 ### claude-session-pool::REQ-001 Only slots, and never the dispatcher session
 
-- claude-session-pool::REQ-001/AC-01: `clear`, `compact`, `close` and `recycle` refuse a name that is not a slot in the roster, and act on no session.
+- claude-session-pool::REQ-001/AC-01: `clear`, `compact`, `close`, `recycle` and `release` refuse a name that is not a slot in the roster, and act on no session.
 - claude-session-pool::REQ-001/AC-02: No tool types into, ends or registers the dispatcher session.
 
 ### claude-session-pool::REQ-002 Delivering a typed command
@@ -89,9 +95,12 @@ The pool directory is the directory the dispatcher session was started in; every
 
 A slot added by one server process is a slot for the next server process started in the same directory, including after the dispatcher session is restarted.
 
-### claude-session-pool::REQ-005 Refusals and failures are reported, not hidden (direct acceptance)
+### claude-session-pool::REQ-005 Refusals and failures are reported, not hidden
 
-Every refusal and failure is returned as a tool error whose text states the reason and the state the server observed; no tool reports success for a step it did not confirm.
+- claude-session-pool::REQ-005/AC-01: Every refusal and failure is returned as a tool error whose text states the reason and the state the server observed; no tool reports success for a step it did not confirm.
+- claude-session-pool::REQ-005/AC-02: When a step that cannot be taken back has been done (a window opened, a command typed, a session ended) and what follows fails, the error says that the step was done.
+- claude-session-pool::REQ-005/AC-03: A session listing that fails while a tool waits after such a step does not end the wait. The wait goes on to its limit, and an error at the limit includes the listing's error.
+- claude-session-pool::REQ-005/AC-04: When the slot's session disappears, or another process comes to answer to the slot's name, while `clear` or `compact` waits, the tool returns at once and states the slot's state.
 
 ## Constraints
 
@@ -105,7 +114,7 @@ Applies to: installation and start-up; the repository provides one command that 
 
 ### claude-session-pool::CON-003 Arguments that reach a command line are validated
 
-Applies to: `init`, `open`, `adopt`, `clear`, `compact`, `close`, `recycle`.
+Applies to: `init`, `open`, `adopt`, `clear`, `compact`, `close`, `recycle`, `release`.
 
 - claude-session-pool::CON-003/AC-01: A slot name must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`; any other name is refused before anything is run.
 - claude-session-pool::CON-003/AC-02: A `model` argument must match `^[A-Za-z0-9._\[\]-]{1,64}$`; any other value is refused before anything is run.
@@ -123,22 +132,24 @@ Slot states and how a slot moves between them:
 | From | To | By |
 |---|---|---|
 | not a slot | live (`idle`, `busy` or `waiting`) | `open`, `init`, `adopt` |
-| live | not a slot | `close` |
-| live | `gone` | the owner closes the window; the session crashes; the Mac restarts; the open step of `recycle` fails |
+| live | not a slot | `close`, `release` |
+| live | `gone` | the owner closes the window; the session crashes; the Mac restarts; the open step of `recycle` fails and no new session exists |
 | `gone` | live | `open` or `recycle` under the same name; the owner starts a session under that name in the pool directory |
-| `gone` | not a slot | `close` |
+| `gone` | not a slot | `close`, `release` |
 | live | `ambiguous` | the owner starts a second session under the same name in the pool directory |
 | `ambiguous` | live | one of the two sessions ends |
+| `ambiguous` | not a slot | `release` |
 
 Boundaries and failures:
 
 - **A message reaches a slot between the idle check and the typing.** The session starts a turn, and the interrupt that discards the input box (claude-session-pool::REQ-002/AC-02) ends that turn. The server does not detect this. The tool's result still follows its own confirmation rule.
 - **`clear` or `compact` on a slot that is `gone` or `ambiguous`**: refused under claude-session-pool::REQ-002/AC-03.
 - **`close` or `recycle` on an `ambiguous` slot**: refused, with the number of sessions that answer to the name; `force` does not change this.
-- **`open` on a name that is a `gone` slot**: allowed; the slot becomes live again. On a live slot it is refused under claude-session-pool::US-001/AC-05.
+- **`open` on a name that is a `gone` slot**: allowed; the slot becomes live again. On a live slot it is refused under claude-session-pool::US-001/AC-05. When the new session is not idle within 60 seconds, the slot stays in the roster and the error says so; the roster then records the new session if it is listed, and otherwise no session.
 - **Terminal cannot be scripted** (macOS refuses the automation request, or Terminal reports an error): the tool returns that error text; `open` adds no slot.
 - **The roster file cannot be parsed, or carries a version this server does not know**: every tool refuses and names the file; the file is not rewritten.
-- **Two calls arrive at the same time**: typing into Terminal and updating the roster happen one call at a time, so two calls never interleave keystrokes or lose a roster update.
+- **Two calls arrive at the same time**: typing into Terminal and updating the roster happen one call at a time, so two calls never interleave keystrokes or lose a roster update. Of two `open` calls for one name, one proceeds and the other is refused without opening a window. Two `adopt` calls for one name register the slot once.
+- **The window the server opened holds other tabs when `close` ends its session**: Terminal's scripting interface cannot close a single tab, and closing the window would end the other tabs, so the session's tab stays (claude-session-pool::US-006/AC-02).
 - **Two dispatcher sessions are started in the same directory**: they share that directory's roster. Every tool call reads the roster file afresh, so each sees the other's changes.
 - **Text read from a Terminal window** (claude-session-pool::US-001/AC-06) is returned inside the error as quoted text; the server takes no action based on it.
 - **The dispatcher session ends while a `compact` call is waiting**: the wait is lost and no result is delivered; the compaction itself continues in the worker session, and a later `status` shows the slot's state.
@@ -160,6 +171,7 @@ The server is named `claude-session-pool` and offers these tools. Every result i
 | `compact` | `name`; `timeoutMinutes`: optional, a positive number |
 | `close` | `name`; `force`: optional boolean, default false |
 | `recycle` | `name`; `force`, `model`, `permissionMode`: optional |
+| `release` | `name` |
 
 ### Facts about Claude Code and Terminal the behaviour rests on
 
@@ -170,14 +182,15 @@ The server is named `claude-session-pool` and offers these tools. Every result i
 - **Opening.** Terminal's `do script` with no target opens a new window and runs a shell command in it. The command changes to the pool directory and replaces the shell with `claude -n <name> --model <model> --permission-mode <mode>`, so that no shell is left in the tab when the session ends.
 - **Typing.** Terminal's `do script <text> in <tab>` delivers the text followed by Return to the program in that tab. A typed command is the character U+0003 (Ctrl+C) followed by the command; Claude Code clears its input box on that character and stays running.
 - **Confirming a clear.** `/clear` gives the session a new `sessionId` and leaves its `pid` and `name` unchanged.
-- **Confirming a compaction.** A session's transcript is the file `<sessionId>.jsonl` in a subdirectory of `~/.claude/projects/`. A finished compaction appends a record with `"type": "system"`, `"subtype": "compact_boundary"` and a `timestamp`. Claude Code does not document this file as a stable interface; claude-session-pool::US-004/AC-04 covers the case where it cannot be read. A session reports `busy` while it compacts.
+- **Confirming a compaction.** A session's transcript is the file `<sessionId>.jsonl` in a subdirectory of `~/.claude/projects/`, with one JSON object per line. A finished compaction appends a record with `"type": "system"`, `"subtype": "compact_boundary"` and a `timestamp`. A line that is still being written is not valid JSON and is not counted; the server looks only at what was appended after the command was typed. Claude Code does not document this file as a stable interface; claude-session-pool::US-004/AC-04 covers the case where it cannot be read. A session reports `busy` while it compacts.
 - **Ending a session.** The server sends the session's process the termination signal; Claude Code exits on it. The server sends no other signal.
-- **Closing a window.** Terminal's `close` on a window whose tab runs no process closes it without a confirmation. A closed window can still be listed for a short time with no tabs; the server treats a window with no tabs, or one that is not visible, as closed.
+- **Closing a window.** Terminal's `close` applies to a window; a tab does not accept it. On a window whose tab runs no process it closes the window without a confirmation. A closed window can still be listed for a short time with no tabs; the server treats a window with no tabs, or one that is not visible, as closed.
 
 ### Roster file
 
 - One file per pool: `~/.claude-session-pool/pools/<key>.json`, where `<key>` is the first 16 hexadecimal digits of the SHA-256 hash of the pool directory's absolute path after resolving symbolic links.
-- Content: a JSON object with `version` (the number `1`), `directory` (that absolute path) and `slots`, a list of objects with `name` and `origin`, where `origin` is `"opened"` or `"adopted"`. `recycle` sets `origin` to `"opened"`.
+- Content: a JSON object with `version` (the number `1`), `directory` (that absolute path) and `slots`, a list of objects with `name` and `origin`, where `origin` is `"opened"` or `"adopted"`. An opened slot also has `pid`, the process ID of the session the server opened for it; `pid` is left out when that session was not listed within 60 seconds of its window opening. `open` and `recycle` set `origin` to `"opened"`, and `pid` to the new session's process ID when it is listed.
+- The server treats a slot's window as one it opened only when the slot is `"opened"` and the live session's process ID equals `pid`. A slot without `pid` is treated as not opened by the server. That includes a window whose session was not listed within 60 seconds of its opening: when the session appears later, `close` ends it and leaves its window open.
 - A missing file means an empty roster. A file whose `version` is not `1`, whose `directory` differs from the pool directory, or that is not valid JSON, is handled as the "cannot be parsed" failure above.
 - The file is replaced atomically on every change.
 
@@ -195,7 +208,7 @@ The server is named `claude-session-pool` and offers these tools. Every result i
 
 ### Start-up command
 
-The start-up command of claude-session-pool::CON-002 passes `claude` an MCP configuration that names this server, gives the absolute path of its entry file, and sets `alwaysLoad` to true.
+The start-up command of claude-session-pool::CON-002 passes `claude` an MCP configuration that names this server, gives the absolute path of its entry file, sets `alwaysLoad` to true, and sets `timeout` to 86400000 milliseconds. Claude Code applies `timeout` as the wall-clock limit of one tool call and raises the time a call may stay silent to at least that value, so a `compact` wait is not cut short at Claude Code's default of 30 silent minutes. No tool call can outlast 24 hours.
 
 ## Out of Scope
 

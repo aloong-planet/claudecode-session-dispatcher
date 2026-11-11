@@ -1,0 +1,66 @@
+/** One entry of Claude Code's session listing (`claude agents --json`). */
+export type SessionEntry = {
+  kind: string;
+  cwd: string;
+  pid?: number;
+  name?: string;
+  sessionId?: string;
+  status?: string;
+  waitingFor?: string;
+};
+
+export interface SessionLister {
+  list(): Promise<SessionEntry[]>;
+}
+
+/** What a newly opened Terminal window runs: change to `directory`, then become `argv`. */
+export type Launch = {
+  directory: string;
+  argv: string[];
+};
+
+export type TabRef = {
+  windowId: number;
+  /** 1-based index of the tab within its window. */
+  tab: number;
+  /** How many tabs the window has. */
+  tabCount: number;
+};
+
+export interface Terminal {
+  /** Opens a new window, starts `launch` in it, and puts the previously frontmost window back in front. */
+  open(launch: Launch): Promise<{ windowId: number; tty: string }>;
+  /** The tab whose terminal device is `tty`, if Terminal has one. */
+  findTab(tty: string): Promise<TabRef | undefined>;
+  /** Discards whatever sits in the program's input box, then types `command` followed by Return. */
+  typeCommand(tab: TabRef, command: string): Promise<void>;
+  /** The last non-empty lines visible in the window's first tab. */
+  lastLines(windowId: number): Promise<string>;
+  close(windowId: number): Promise<void>;
+}
+
+export interface Processes {
+  /** The controlling terminal device of a process, such as `/dev/ttys007`. */
+  ttyOf(pid: number): Promise<string | undefined>;
+  /** Asks the process to end. */
+  terminate(pid: number): void;
+  isAlive(pid: number): boolean;
+}
+
+/** A position in a session's transcript, taken before a command is typed. */
+export type TranscriptMark = {
+  path: string;
+  offset: number;
+};
+
+export interface Transcripts {
+  /** The current end of the session's transcript, or undefined when it cannot be found or read. */
+  mark(sessionId: string): TranscriptMark | undefined;
+  /** Whether a finished compaction was recorded after `mark`. */
+  compactedSince(mark: TranscriptMark): boolean;
+}
+
+export interface Clock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}

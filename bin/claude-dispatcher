@@ -1,0 +1,14 @@
+#!/bin/sh
+# Starts a Claude Code session with the claude-session-pool server attached to that session only.
+# Every argument is passed on to `claude`, for example: claude-dispatcher --resume <session-id>
+set -eu
+
+config=$(node -e '
+const { realpathSync } = require("node:fs");
+const { dirname, join } = require("node:path");
+const entry = join(dirname(dirname(realpathSync(process.argv[1]))), "src", "server.ts");
+const server = { command: "node", args: [entry], alwaysLoad: true, timeout: 86400000 };
+process.stdout.write(JSON.stringify({ mcpServers: { "claude-session-pool": server } }));
+' "$0")
+
+exec claude "$@" --mcp-config "$config"
