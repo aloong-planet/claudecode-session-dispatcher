@@ -101,6 +101,66 @@ describe("the session listing", () => {
   });
 });
 
+describe("the plugin listing", () => {
+  // Shaped like what `claude plugin list --json` printed on 2026-11-13 (Claude Code 2.1.322) for a user-level
+  // installation from the repository's marketplace, beside a plugin copied into the cache and one installed for a project.
+  const listing = JSON.stringify([
+    {
+      id: "chrome-devtools-mcp@chrome-devtools-plugins",
+      version: "1.6.0",
+      scope: "user",
+      enabled: true,
+      installPath: "/Users/someone/.claude/plugins/cache/chrome-devtools-plugins/chrome-devtools-mcp/1.6.0",
+      installedAt: "2026-07-20T03:17:25.888Z",
+      lastUpdated: "2026-07-20T03:17:25.888Z",
+      projectEnabled: false,
+    },
+    {
+      id: "cc-session-pool@cc-session-pool",
+      version: "0.1.0",
+      scope: "user",
+      enabled: false,
+      installPath: "/Users/someone/.claude/plugins/cache/cc-session-pool/cc-session-pool/0.1.0",
+      readFromFolder: "/Users/someone/playground/claudecode-session-dispatcher/plugin",
+      folderVersion: "0.1.0",
+      installedAt: "2026-11-13T06:33:00.023Z",
+      lastUpdated: "2026-11-13T06:33:00.023Z",
+      mcpServers: { pool: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/../src/server.ts"], timeout: 86_400_000, alwaysLoad: true } },
+      projectEnabled: false,
+    },
+    {
+      id: "half-written@somewhere",
+      scope: "user",
+      enabled: "unknown",
+    },
+    {
+      id: "superpowers@superpowers-marketplace",
+      version: "7.0.1",
+      scope: "project",
+      enabled: false,
+      installPath: "/Users/someone/.claude/plugins/cache/superpowers-marketplace/superpowers/7.0.1",
+      projectPath: "/Users/someone/playground/skill-context-efficiency",
+      projectEnabled: false,
+    },
+  ]);
+
+  it("reads each installation's ID, whether it is enabled as printed, and the directory a plugin used in place is read from", async () => {
+    expect(await new ClaudeCli(printing(listing)).installed()).toEqual([
+      { id: "chrome-devtools-mcp@chrome-devtools-plugins", enabled: true, readFromFolder: undefined },
+      { id: "cc-session-pool@cc-session-pool", enabled: false, readFromFolder: "/Users/someone/playground/claudecode-session-dispatcher/plugin" },
+      { id: "half-written@somewhere", enabled: "unknown", readFromFolder: undefined },
+      { id: "superpowers@superpowers-marketplace", enabled: false, readFromFolder: undefined },
+    ]);
+  });
+
+  it.each([
+    { what: "something that is not JSON", output: "error: unknown command 'plugin'", reason: "did not print JSON" },
+    { what: "JSON that is not a list", output: '{"plugins": []}', reason: "did not print a list of plugins" },
+  ])("fails with a reason when the command prints $what", async ({ output, reason }) => {
+    await expect(new ClaudeCli(printing(output)).installed()).rejects.toThrow(reason);
+  });
+});
+
 describe("processes", () => {
   it.each([
     { output: "ttys007\n", tty: "/dev/ttys007" },

@@ -4,7 +4,8 @@
 # Every argument is passed on to `claude`, for example: claude-dispatcher --resume <session-id>
 set -eu
 
-# The arguments to add, one to a line: a name where one is called for, then the plugin's directory.
+# The arguments to add, one to a line: a name where one is called for, then the plugin's directory where the session
+# does not get the plugin from an installation. There can be none.
 added=$(node -e '
 const { realpathSync } = require("node:fs");
 const { dirname, join } = require("node:path");
@@ -14,11 +15,13 @@ const root = dirname(dirname(realpathSync(process.argv[1])));
 import(pathToFileURL(join(root, "src", "startup.ts")).href).then((startup) => startup.main(process.argv.slice(2)));
 ' "$0" "$@")
 
-while IFS= read -r argument; do
-  set -- "$@" "$argument"
-done <<EOF_ADDED
+if [ -n "$added" ]; then
+  while IFS= read -r argument; do
+    set -- "$@" "$argument"
+  done <<EOF_ADDED
 $added
 EOF_ADDED
+fi
 
 # `exec` keeps this process ID, so the server can tell the session started here from one started inside it.
 export CLAUDE_SESSION_POOL_DISPATCHER_PID=$$

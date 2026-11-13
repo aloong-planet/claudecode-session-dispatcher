@@ -1,11 +1,11 @@
 /**
  * What the start-up command adds to the arguments it was given: the rules, as a function of the arguments, the
- * directory, the sessions on this Mac and what the resumed session's transcript shows. The command itself, as a
+ * directory, the sessions on this Mac, what the resumed session's transcript shows and the installed plugins. The command itself, as a
  * process, is covered in `claude-session-pool-startup.test.ts`.
  */
 import { describe, expect, it } from "vitest";
 import type { NameState } from "../src/adapters/transcripts.ts";
-import type { SessionEntry } from "../src/ports.ts";
+import type { InstalledPlugin, SessionEntry } from "../src/ports.ts";
 import { startupArguments } from "../src/startup.ts";
 
 const SESSION = "c97a8f9a-26a0-473f-8829-eeb79f7298e0";
@@ -17,11 +17,22 @@ type Situation = {
   /** The sessions on this Mac, or the reason why they cannot be listed. */
   sessions?: SessionEntry[] | string;
   nameState?: NameState;
+  /** The installed plugins, or the reason why they cannot be listed. */
+  plugins?: InstalledPlugin[] | string;
+  /** Symbolic links: a path, and the path it resolves to. */
+  links?: Record<string, string>;
 };
 
 function added(
   given: string[],
-  { directory = "/Users/someone/git/codex-agents", pluginDirectory = "/repo/plugin", sessions = [], nameState = "unknown" }: Situation = {},
+  {
+    directory = "/Users/someone/git/codex-agents",
+    pluginDirectory = "/repo/plugin",
+    sessions = [],
+    nameState = "unknown",
+    plugins = [],
+    links = {},
+  }: Situation = {},
 ) {
   const notices: string[] = [];
   const result = startupArguments(given, {
@@ -29,6 +40,8 @@ function added(
     pluginDirectory,
     sessions: { list: () => (typeof sessions === "string" ? Promise.reject(new Error(sessions)) : Promise.resolve(sessions)) },
     nameState: () => nameState,
+    plugins: { installed: () => (typeof plugins === "string" ? Promise.reject(new Error(plugins)) : Promise.resolve(plugins)) },
+    realPath: (path) => links[path] ?? path,
     notice: (line) => notices.push(line),
   });
   return { result, notices };
@@ -168,5 +181,67 @@ describe("the arguments the start-up command adds", () => {
     { directory: "/Users/someone/-x", name: "-x-dispatcher" },
   ])("builds the name $name in the directory $directory, as one argument", async ({ directory, name }) => {
     expect(await added([], { directory }).result).toEqual([`--name=${name}`, ...PLUGIN]);
+  });
+});
+
+describe("whether the start-up command loads the plugin itself", () => {
+  const installed = (overrides: Partial<InstalledPlugin> = {}): InstalledPlugin => ({
+    id: "cc-session-pool@cc-session-pool",
+    enabled: true,
+    readFromFolder: "/repo/plugin",
+    ...overrides,
+  });
+
+  it.each([
+    { what: "a new session", given: [], expected: ["--name=codex-agents-dispatcher"] },
+    { what: "a session given a name", given: ["-n", "pool"], expected: [] },
+  ])("leaves the plugin to an installation that is enabled here and reads this repository's plugin, for $what", async ({ given, expected }) => {
+    const { result, notices } = added(given, { plugins: [installed()] });
+
+    expect(await result).toEqual(expected);
+    expect(notices).toEqual([]);
+  });
+
+  it("takes an installation that reads this repository's plugin through a symbolic link as reading it", async () => {
+    const plugins = [installed({ readFromFolder: "/Users/someone/link-to-repo/plugin" })];
+
+    expect(await added(["-n", "pool"], { plugins, links: { "/Users/someone/link-to-repo/plugin": "/repo/plugin" } }).result).toEqual([]);
+  });
+
+  it.each([
+    { what: "the plugin is not installed", plugins: [installed({ id: "superpowers@superpowers-marketplace" })] },
+    { what: "the installation is not enabled in this directory", plugins: [installed({ enabled: false })] },
+    { what: "the installation reads another copy of the plugin", plugins: [installed({ readFromFolder: "/Users/someone/other-checkout/plugin" })] },
+    { what: "the installation reads no directory in place", plugins: [installed({ readFromFolder: undefined })] },
+  ])("loads the plugin for the session when $what", async ({ plugins }) => {
+    const { result, notices } = added(["-n", "pool"], { plugins });
+
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([]);
+  });
+
+  it.each([
+    { given: ["--restricted"] },
+    { given: ["--setting-sources", "project"] },
+    { given: ["--setting-sources=project,local"] },
+    { given: ["--settings", '{"enabledPlugins":{"cc-session-pool@cc-session-pool":false}}'] },
+    { given: ["--settings=/Users/someone/settings.json"] },
+  ])("loads the plugin for the session when it is given $given, with which the session may leave the installation out", async ({ given }) => {
+    const { result, notices } = added(["-n", "pool", ...given], { plugins: [installed()] });
+
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([]);
+  });
+
+  it.each([
+    { what: "the plugins cannot be listed", plugins: "claude plugin exited with code 1", reason: "claude plugin exited with code 1" },
+    { what: "the listing does not say whether the plugin is enabled", plugins: [installed({ enabled: "yes" })], reason: '`claude plugin list --json` printed "yes" for whether cc-session-pool@cc-session-pool is enabled' },
+  ])("loads the plugin for the session, and says why, when $what", async ({ plugins, reason }) => {
+    const { result, notices } = added(["-n", "pool"], { plugins });
+
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([
+      `claude-dispatcher: it could not be found out whether the cc-session-pool@cc-session-pool plugin is installed (${reason}), so it is loaded for this session with --plugin-dir.`,
+    ]);
   });
 });

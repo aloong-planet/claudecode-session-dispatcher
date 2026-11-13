@@ -1,9 +1,10 @@
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ClaudeCli } from "./adapters/claude-cli.ts";
 import { run } from "./adapters/exec.ts";
 import { FileTranscripts, type NameState } from "./adapters/transcripts.ts";
-import type { SessionLister } from "./ports.ts";
+import type { PluginLister, SessionLister } from "./ports.ts";
 import { messageOf } from "./report.ts";
 import { Refusal } from "./validate.ts";
 
@@ -13,11 +14,24 @@ export type StartupDeps = {
   /** The absolute path of the plugin's directory. */
   pluginDirectory: string;
   sessions: SessionLister;
+  /** The installed plugins, as seen from `directory`. */
+  plugins: PluginLister;
+  /** A path with its symbolic links resolved, or the path as given when it cannot be resolved. */
+  realPath: (path: string) => string;
   /** Whether the transcript of a session shows a name that was given to it. */
   nameState: (sessionId: string) => NameState;
   /** Prints one line for the person who ran the command. */
   notice: (line: string) => void;
 };
+
+/** The plugin's ID in Claude Code: the plugin and the marketplace in the repository, both named `cc-session-pool`. */
+const PLUGIN_ID = "cc-session-pool@cc-session-pool";
+
+/**
+ * Options with which the session may not load the plugin from its installation although the listing says it is
+ * enabled: they leave out the user's settings or add settings of their own.
+ */
+const CHANGES_THE_SETTINGS = new Set(["--restricted", "--setting-sources", "--settings"]);
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -33,7 +47,8 @@ const LEAVES_THE_NAME_ALONE = new Set([
 
 /**
  * The arguments the start-up command adds after the ones it was given: a name where the dispatcher session would
- * otherwise get a generated one, then the plugin, loaded for this session only.
+ * otherwise get a generated one, then the plugin, loaded for this session only, unless the session gets this
+ * repository's plugin from an installation.
  */
 export async function startupArguments(given: string[], deps: StartupDeps): Promise<string[]> {
   // The path travels to `claude` on a line of its own, so a line break in it would turn into further arguments.
@@ -42,9 +57,27 @@ export async function startupArguments(given: string[], deps: StartupDeps): Prom
       `The path of the plugin's directory, ${JSON.stringify(deps.pluginDirectory)}, contains a control character, so it could not be passed to claude. Nothing was started.`,
     );
   }
-  const plugin = ["--plugin-dir", deps.pluginDirectory];
+  const plugin = (await isInstalledHere(given, deps)) ? [] : ["--plugin-dir", deps.pluginDirectory];
   // One word, so that a name that starts with a hyphen is not read as an option.
   return callsForDefaultName(given, deps) ? [`--name=${await defaultName(deps)}`, ...plugin] : plugin;
+}
+
+/**
+ * Whether the session gets the plugin from an installation: one enabled in the directory and read from this
+ * repository's plugin directory, with no option given that changes which settings the session reads.
+ */
+async function isInstalledHere(given: string[], deps: StartupDeps): Promise<boolean> {
+  if (given.some((argument) => CHANGES_THE_SETTINGS.has(optionIn(argument)))) return false;
+  try {
+    const entries = (await deps.plugins.installed()).filter((entry) => entry.id === PLUGIN_ID);
+    const unreadable = entries.find((entry) => typeof entry.enabled !== "boolean");
+    if (unreadable) throw new Error(`\`claude plugin list --json\` printed ${JSON.stringify(unreadable.enabled)} for whether ${PLUGIN_ID} is enabled`);
+    const here = deps.realPath(deps.pluginDirectory);
+    return entries.some((entry) => entry.enabled === true && entry.readFromFolder !== undefined && deps.realPath(entry.readFromFolder) === here);
+  } catch (error) {
+    deps.notice(`claude-dispatcher: it could not be found out whether the ${PLUGIN_ID} plugin is installed (${messageOf(error)}), so it is loaded for this session with --plugin-dir.`);
+    return false;
+  }
 }
 
 function callsForDefaultName(given: string[], deps: StartupDeps): boolean {
@@ -112,6 +145,14 @@ export async function main(given: string[]): Promise<void> {
       directory: process.cwd(),
       pluginDirectory: join(dirname(import.meta.dirname), "plugin"),
       sessions: new ClaudeCli(run),
+      plugins: new ClaudeCli(run),
+      realPath: (path) => {
+        try {
+          return realpathSync(path);
+        } catch {
+          return path;
+        }
+      },
       nameState: (sessionId) => transcripts.nameState(sessionId),
       notice: (line) => console.error(line),
     });

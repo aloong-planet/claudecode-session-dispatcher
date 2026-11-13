@@ -308,26 +308,34 @@ describe("the start-up command", () => {
 
   /**
    * Runs the command with a stand-in `claude` on PATH. Asked for the session listing, the stand-in prints `sessions`,
-   * or fails when there are none to print; started as a session, it prints its arguments, the mark it was started
-   * with and its own process ID. It logs every run.
+   * or fails when there are none to print. Asked for the plugin listing, it prints `plugins` when it runs in the
+   * directory the command was started in and an empty list anywhere else, or fails when `plugins` is "fails". Started
+   * as a session, it prints its arguments, the mark it was started with and its own process ID. It logs every run.
    */
-  function start(given: string[], options: { sessions?: unknown[]; cwd?: string; home?: string; command?: string } = {}) {
+  function start(
+    given: string[],
+    options: { sessions?: unknown[]; plugins?: unknown[] | "fails"; cwd?: string; home?: string; command?: string } = {},
+  ) {
     const directory = temporaryDirectory();
+    const cwd = options.cwd ?? directory;
     const listing = join(directory, "sessions.json");
+    const pluginListing = join(directory, "plugins.json");
     const log = join(directory, "claude-runs.log");
     if (options.sessions) writeFileSync(listing, JSON.stringify(options.sessions));
+    if (options.plugins !== "fails") writeFileSync(pluginListing, JSON.stringify(options.plugins ?? []));
     const report = `console.log(JSON.stringify({ args: process.argv.slice(1), mark: process.env.${MARK}, pid: process.pid }))`;
     const script = [
       "#!/bin/sh",
       `printf '%s\\n' "$*" >> '${log}'`,
       `if [ "\${1:-}" = agents ]; then [ -f '${listing}' ] || { echo 'the session registry is locked' >&2; exit 1; }; cat '${listing}'; exit 0; fi`,
+      `if [ "\${1:-}" = plugin ]; then [ -f '${pluginListing}' ] || { echo 'the plugin registry is locked' >&2; exit 1; }; if [ "$(pwd -P)" = '${realpathSync(cwd)}' ]; then cat '${pluginListing}'; else echo '[]'; fi; exit 0; fi`,
       `exec "${process.execPath}" -e '${report}' -- "$@"`,
     ].join("\n");
     writeFileSync(join(directory, "claude"), `${script}\n`);
     chmodSync(join(directory, "claude"), 0o755);
     const ran = spawnSync(options.command ?? join(repository, "bin", "claude-dispatcher"), given, {
       encoding: "utf8",
-      cwd: options.cwd ?? directory,
+      cwd,
       env: { PATH: `${directory}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: options.home ?? directory },
     });
     const started = ran.stdout === "" ? undefined : (JSON.parse(ran.stdout) as { args: string[]; mark?: string; pid: number });
@@ -382,7 +390,7 @@ describe("the start-up command", () => {
     expect(stderr).toContain("Pass -n <name>");
   });
 
-  it("changes no configuration of the user or of the project, and runs claude only to list the sessions and to start the session", () => {
+  it("changes no configuration of the user or of the project, and runs claude only to list the plugins and the sessions and to start the session", () => {
     const home = temporaryDirectory();
     const cwd = join(home, "pool");
     mkdirSync(cwd);
@@ -392,7 +400,7 @@ describe("the start-up command", () => {
     const { status, claudeRuns } = start([], { cwd, home, sessions: [] });
 
     expect(status).toBe(0);
-    expect(claudeRuns).toEqual(["agents --json", `--name=pool-dispatcher --plugin-dir ${pluginDirectory}`]);
+    expect(claudeRuns).toEqual(["plugin list --json", "agents --json", `--name=pool-dispatcher --plugin-dir ${pluginDirectory}`]);
     expect(readFileSync(join(home, ".claude.json"), "utf8")).toBe(USER_CONFIGURATION);
     expect(readFileSync(join(cwd, ".mcp.json"), "utf8")).toBe(PROJECT_CONFIGURATION);
     expect(readdirSync(home).sort()).toEqual([".claude.json", "pool"]);
@@ -440,6 +448,40 @@ describe("the start-up command", () => {
     expect(stderr).toBe("");
     expect(status).toBe(0);
     expect(started!.args).toEqual(["-n", "boss", "--plugin-dir", join(checkout, "plugin")]);
+  });
+
+  it("leaves the plugin to an installation that is enabled in the directory it is run in and reads this repository's plugin", () => {
+    const cwd = join(temporaryDirectory(), "pool");
+    mkdirSync(cwd);
+    const plugins = [{ id: "cc-session-pool@cc-session-pool", scope: "user", enabled: true, readFromFolder: pluginDirectory, projectEnabled: false }];
+
+    const { status, stderr, started } = start(["-n", "boss"], { cwd, plugins });
+
+    expect(status).toBe(0);
+    expect(stderr).toBe("");
+    expect(started!.args).toEqual(["-n", "boss"]);
+  });
+
+  it("leaves the plugin to an installation that reads this repository's plugin through a symbolic link", () => {
+    const link = join(temporaryDirectory(), "repo-link");
+    symlinkSync(repository, link);
+    const plugins = [{ id: "cc-session-pool@cc-session-pool", scope: "user", enabled: true, readFromFolder: join(link, "plugin"), projectEnabled: false }];
+
+    const { status, stderr, started } = start(["-n", "boss"], { plugins });
+
+    expect(status).toBe(0);
+    expect(stderr).toBe("");
+    expect(started!.args).toEqual(["-n", "boss"]);
+  });
+
+  it("loads the plugin for the session, and says why, when the installed plugins cannot be listed", () => {
+    const { status, stderr, started } = start(["-n", "boss"], { plugins: "fails" });
+
+    expect(status).toBe(0);
+    expect(stderr).toBe(
+      "claude-dispatcher: it could not be found out whether the cc-session-pool@cc-session-pool plugin is installed (the plugin registry is locked), so it is loaded for this session with --plugin-dir.\n",
+    );
+    expect(started!.args).toEqual(["-n", "boss", ...plugin]);
   });
 
   it("starts nothing from a checkout whose path holds a line break, which would reach claude as further arguments", () => {

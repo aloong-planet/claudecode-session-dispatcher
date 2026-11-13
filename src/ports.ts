@@ -13,6 +13,21 @@ export interface SessionLister {
   list(): Promise<SessionEntry[]>;
 }
 
+/** One entry of Claude Code's listing of installed plugins (`claude plugin list --json`). */
+export type InstalledPlugin = {
+  /** `<plugin>@<marketplace>`. */
+  id: string;
+  /** Whether the plugin is enabled in the directory the listing was run in; as printed, so not always a boolean. */
+  enabled: unknown;
+  /** The directory a plugin used in place is read from. */
+  readFromFolder?: string;
+};
+
+export interface PluginLister {
+  /** The installed plugins, as seen from the directory the listing runs in. Rejects when they cannot be listed. */
+  installed(): Promise<InstalledPlugin[]>;
+}
+
 /** What a newly opened Terminal window runs: change to `directory`, then become `argv`. */
 export type Launch = {
   directory: string;
