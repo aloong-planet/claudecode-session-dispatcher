@@ -1,6 +1,6 @@
 # claude-session-pool
 
-A Claude Code plugin whose MCP server lets one Claude Code session open, reset, compact and close a set of interactive Claude Code sessions running in Terminal windows on the same Mac, and offers every session that loads it a tool with which that session compacts its own conversation; a hook of the plugin wakes that session afterwards. It exists so that a session handing out tickets no longer needs a person to create its worker sessions or to type `/clear` and `/compact` into them.
+A Claude Code plugin whose MCP server lets one Claude Code session open, reset, compact and close a set of interactive Claude Code sessions running in Terminal windows on the same Mac, and offers every session that loads it a tool with which that session compacts its own conversation; the plugin's mod, or where it does not run a hook of the plugin, wakes that session afterwards. It exists so that a session handing out tickets no longer needs a person to create its worker sessions or to type `/clear` and `/compact` into them.
 
 ## Language
 
@@ -33,9 +33,13 @@ A slash command the server delivers to a worker session by typing it into the se
 _Avoid_: sent command, injected command
 
 **Wake request**:
-What `compact_self` leaves for a conversation so that the plugin's hook wakes the session when that conversation's next compaction started by `/compact` has finished. It belongs to the conversation, not to the session's process: after a clear the session holds another conversation, and the request does not apply to it.
+What a `compact_self` call that the server handles leaves for a conversation so that the plugin's hook wakes the session when that conversation's next compaction, started by `/compact` or asked for by the plugin's mod, has finished. It belongs to the conversation, not to the session's process: after a clear the session holds another conversation, and the request does not apply to it.
 _Avoid_: follow-up, pending compaction
 
 **Hook record**:
-What the plugin's hook leaves at every session start, by which `compact_self` knows that the plugin's hooks run in that session. It is not an entry in the session's transcript and not the declaration that makes Claude Code run the hook.
+What the plugin's hook leaves at every session start, by which a `compact_self` call that the server handles knows that the plugin's hooks run in that session. It is not an entry in the session's transcript and not the declaration that makes Claude Code run the hook.
 _Avoid_: marker, hook log
+
+**Mod**:
+The plugin's hooks module: code of the plugin that Claude Code loads into a session's own process. It is not one of the plugin's hooks, which are commands that Claude Code starts as separate processes.
+_Avoid_: hook module, extension, in-process hook

@@ -6,4 +6,4 @@ A spec states product behaviour, facts about the external systems the feature re
 
 | Spec | In one line |
 |---|---|
-| [claude-session-pool](claude-session-pool.md) | A Claude Code plugin whose MCP server lets a dispatcher session open, adopt, clear, compact, inspect, close, replace and release worker sessions running in Terminal windows, and which gives every session that has it a tool to compact its own conversation and a hook that wakes it afterwards. |
+| [claude-session-pool](claude-session-pool.md) | A Claude Code plugin whose MCP server lets a dispatcher session open, adopt, clear, compact, inspect, close, replace and release worker sessions running in Terminal windows, and which gives every session that has it a tool to compact its own conversation and wakes that session afterwards. |

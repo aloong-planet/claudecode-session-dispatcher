@@ -1,2 +1,5 @@
 docs/.workings/
 node_modules/
+# Claude Code writes these when it loads the plugin's mod: the types of its interface for mods, and a tsconfig that extends them.
+plugin/.claude-plugin/types/
+plugin/tsconfig.json

@@ -1,6 +1,6 @@
 /**
- * What Claude Code and a person run: the server and the hooks as the plugin declares them, and the start-up
- * command. All run as real processes. `claude`, `ps` and `osascript` are replaced by scripts on PATH, so no Claude
+ * What Claude Code and a person run: the server, the hooks and the mod as the plugin declares them, and the start-up
+ * command. All but the mod run as real processes; what the mod does is covered in `mod.test.ts`. `claude`, `ps` and `osascript` are replaced by scripts on PATH, so no Claude
  * Code session is started and Terminal is not touched.
  *
  * Not covered here, because it needs real Claude Code sessions: that Claude Code loads the plugin from these
@@ -8,7 +8,9 @@
  * variables (which is how the start-up command's mark reaches the server), and wakes the session when the
  * `PostCompact` hook exits with code 2. Nor is what Claude Code does in a session the start-up command starts while
  * the plugin is also installed: that it offers each tool once, under the same names as without the installation,
- * and runs each hook once for an event. All of these were checked by hand on Claude Code 2.1.322, the last three in
+ * and runs each hook once for an event. Nor is that Claude Code loads the mod the hooks file names, and that with the
+ * plugin installed and also given by `--plugin-dir` it loads the mod once and so answers a call to `compact_self` once:
+ * only the number of loads was measured, in print mode, where no call was made. All of these were checked by hand on Claude Code 2.1.322, the last three in
  * print mode under a throwaway configuration directory, and are to be checked again when Claude Code changes how it
  * loads plugins or runs hooks.
  */
@@ -43,7 +45,8 @@ const manifest = readJson(join(pluginDirectory, ".claude-plugin", "plugin.json")
   name: string;
   mcpServers: Record<string, Program & { alwaysLoad?: boolean; timeout?: number }>;
 };
-const declaredHooks = (readJson(join(pluginDirectory, "hooks", "hooks.json")) as { hooks: Record<string, HookGroup[]> }).hooks;
+const hooksFile = readJson(join(pluginDirectory, "hooks", "hooks.json")) as { modules: string[]; hooks: Record<string, HookGroup[]> };
+const declaredHooks = hooksFile.hooks;
 
 /** The arguments Claude Code runs a declared program with: it puts the plugin's directory where the declaration names it. */
 const argumentsOf = (program: Program) => program.args.map((argument) => argument.replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginDirectory));
@@ -129,6 +132,31 @@ describe("the plugin", () => {
     expect(sessionStart!.hooks).toEqual([{ type: "command", command: "node", args: [expect.any(String)] }]);
     expect(postCompact!.matcher).toBe("manual");
     expect(postCompact!.hooks).toEqual([{ type: "command", command: "node", args: [expect.any(String)], asyncRewake: true }]);
+  });
+
+  it("names one hooks module beside its hooks, the mod: a file in the plugin's directory that exports register and nothing else", async () => {
+    expect(hooksFile.modules).toEqual(["./register.ts"]);
+
+    const mod = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as Record<string, unknown>;
+
+    expect(Object.keys(mod)).toEqual(["register"]);
+    expect(typeof mod.register).toBe("function");
+  });
+
+  it("carries a mod that answers the call to compact_self under the name this plugin and its server give the tool", async () => {
+    type Hook = ($: unknown, e: unknown, next: () => Promise<unknown>) => Promise<unknown>;
+    const { register } = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as { register: (on: (event: string, hook: Hook) => void) => void };
+    const hooks = new Map<string, Hook>();
+    register((event, hook) => void hooks.set(event, hook));
+    const engine = { session: { id: () => Promise.resolve("s-1") } };
+    const fromServer = { result: "from the server" };
+    const [server] = Object.keys(manifest.mcpServers);
+    await hooks.get("session.start")!(engine, { isInteractive: true }, () => Promise.resolve({}));
+
+    const answered = await hooks.get("tool.call")!(engine, { tool: `mcp__plugin_${manifest.name}_${server}__compact_self` }, () => Promise.resolve(fromServer));
+
+    expect(answered).not.toBe(fromServer);
+    expect(answered).toEqual({ result: expect.stringMatching(/compacted when this turn ends/) as unknown });
   });
 });
 

@@ -41,7 +41,7 @@ export function createServer({ selfCompaction, pool }: Offer): McpServer {
     "compact_self",
     {
       description:
-        "Compact this session's own conversation: types /compact into this session's Terminal tab. The command runs when the current turn ends, so call this as the last step of a turn and then end the turn. When the compaction has finished, a hook of the plugin wakes this session, and it carries on from its summary. Takes no arguments and reaches no other session.",
+        "Compact this session's own conversation once the current turn ends, so call this as the last step of a turn and then end the turn. When the compaction has finished, this session is woken and carries on from its summary. The result says how the compaction was arranged. Takes no arguments and reaches no other session.",
       inputSchema: {},
     },
     async () => reply(await selfCompaction.request()),

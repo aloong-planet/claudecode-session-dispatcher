@@ -11,4 +11,4 @@ Each record states one architectural decision of this project and the options it
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-interactive-terminal-worker-sessions.md) | Worker sessions are interactive sessions in Terminal windows | Accepted (2026-11-11) |
-| [0002](0002-wake-by-hook-plugin-delivery.md) | A hook wakes a session after it compacts itself; the server and the hooks are one plugin | Proposed |
+| [0002](0002-wake-by-hook-plugin-delivery.md) | A session that compacts itself is woken by the plugin's mod, or by a hook where the mod does not run; the server, the hooks and the mod are one plugin | Proposed |
