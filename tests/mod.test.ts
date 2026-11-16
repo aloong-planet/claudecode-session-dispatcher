@@ -1,12 +1,14 @@
 /**
  * The plugin's mod, through the one thing it exports: `register`, which Claude Code calls with the function that adds
  * hooks. Claude Code's side is a fake engine handed in the way Claude Code hands in its own: it records what the mod
- * asks for (a compaction, a prompt, a timer) and lets a test decide how each compaction ends.
+ * asks for (a compaction, a prompt, a timer, a tool of its own) and lets a test decide how each compaction ends and
+ * which context figures Claude Code has.
  *
  * Not covered here, because it needs a real Claude Code session: that Claude Code loads the mod from the plugin's
  * hooks file, tells it of these events with these inputs, lets its answer stand in for the server's tool, and starts
  * a turn when it submits a prompt. All of that was measured by hand on Claude Code 2.1.322 and is to be measured
- * again when Claude Code changes its interface for mods.
+ * again when Claude Code changes its interface for mods. That Claude Code lists the mod's own tool and gives it the
+ * figures of the calling request is checked live in `claude-session-pool.live.test.ts`.
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,6 +30,13 @@ const SESSION = "c97a8f9a-26a0-473f-8829-eeb79f7298e0";
 const OTHER_SESSION = "78744021-cd3b-490e-b601-5575fbb91cd6";
 /** What the server's tool would have returned, had the call reached it. */
 const FROM_SERVER = { result: "from the server" };
+/** The mod's own tool, under the name a session sees it by. */
+const USAGE_TOOL = "mcp__cc-session-pool__context_usage";
+/**
+ * What Claude Code 2.1.322 gave a mod's `$.session.usage()` in a tool call: the `context` of the second call of the
+ * measured run (research: context-usage-as-a-tool.md, "Measured"), with the other figures in the form its types give.
+ */
+const MEASURED = { startedAt: 1_794_810_000_000, context: { tokens: 58965, window: 1000000, percent: 6 }, rateLimits: [], cost: { usd: 0.04 } };
 
 type Hook = ($: unknown, e: unknown, next: (e: unknown) => Promise<unknown>) => Promise<unknown>;
 type Compaction = { finish: (outcome?: { skip?: string }) => Promise<void>; refuse: (message: string) => Promise<void> };
@@ -42,8 +51,11 @@ const settle = async () => {
   for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
 };
 
-/** A session with the mod registered in it, and the events Claude Code tells a mod of. `told` is whether the mod was told that the session started. */
-async function setup({ interactive = true, told = true } = {}) {
+/**
+ * A session with the mod registered in it, and the events Claude Code tells a mod of. `told` is whether the mod was told
+ * that the session started; `registerFails`, whether Claude Code refuses the mod's tool.
+ */
+async function setup({ interactive = true, told = true, registerFails = false } = {}) {
   const hooks = new Map<string, Hook>();
   register((event: string, hook: unknown) => void hooks.set(event, hook as Hook));
   /** `idFails`: Claude Code does not give the mod the session's ID. */
@@ -55,10 +67,21 @@ async function setup({ interactive = true, told = true } = {}) {
   const compactions: Compaction[] = [];
   const prompts: string[] = [];
   const timers: { ms: number; run: () => void }[] = [];
+  /** The tools the mod registered, as it described them. */
+  const tools: unknown[] = [];
+  /** What Claude Code answers the mod's request for the session's figures with. */
+  const usage = { answer: (): Promise<unknown> => Promise.resolve(MEASURED) };
   const engine = {
     env: { get: (name: string) => Promise.resolve(name === "HOME" ? home : undefined) },
     fs: { read: (path: string) => Promise.resolve().then(() => readFileSync(path, "utf8")) },
+    tool: {
+      register: (spec: { name: string }) =>
+        registerFails
+          ? Promise.reject(new Error("cc-session-pool: $.tool.register: the tool could not be registered"))
+          : (tools.push(spec), Promise.resolve({ tool: `mcp__cc-session-pool__${spec.name}` })),
+    },
     session: {
+      usage: () => usage.answer(),
       id: () => (session.idFails ? Promise.reject(new Error("no session")) : Promise.resolve(session.id)),
       compact: () =>
         new Promise<{ skip?: string }>((resolve, reject) => {
@@ -81,6 +104,8 @@ async function setup({ interactive = true, told = true } = {}) {
     compactions,
     prompts,
     timers,
+    tools,
+    usage,
     /** A call to a tool; resolves to what the model receives for it. */
     calls: (tool = TOOL, agentId?: string) => tell("tool.call", { tool, tool_use_id: "toolu_01", ...(agentId === undefined ? {} : { agentId }) }, FROM_SERVER),
     turnStarts: () => tell("turn.start", { text: "", turnId: "t" }),
@@ -155,6 +180,7 @@ describe("a call the mod does not answer", () => {
   it.each([
     { what: "a call to another tool of the server", tool: "mcp__plugin_cc-session-pool_pool__status" },
     { what: "a call to a tool named compact_self of another server", tool: "mcp__other__compact_self" },
+    { what: "a call to a tool named context_usage of another server", tool: "mcp__other__context_usage" },
     { what: "a call in a session that is not interactive", tool: TOOL, interactive: false },
     { what: "a call in a session the mod was not told the start of", tool: TOOL, told: false },
   ])("reaches the server: $what", async ({ tool, interactive, told }) => {
@@ -434,5 +460,78 @@ describe("a compaction that does not complete for another reason", () => {
     expect(prompts).toEqual([]);
     expect(timers).toEqual([]);
     expect(compactions).toHaveLength(1);
+  });
+});
+
+describe("the tool context_usage", () => {
+  it.each([
+    { what: "an interactive session", interactive: true },
+    { what: "a session that is not interactive", interactive: false },
+  ])("is offered from the start of $what, with its definition in the tool list and no arguments", async ({ interactive }) => {
+    const { tools } = await setup({ interactive });
+
+    expect(tools).toEqual([
+      { name: "context_usage", description: expect.stringMatching(/context/) as unknown, inputSchema: { type: "object", properties: {} }, isDeferred: false },
+    ]);
+  });
+
+  it("is missing when Claude Code refuses to register it, and the mod still answers compact_self", async () => {
+    const { calls, tools } = await setup({ registerFails: true });
+
+    const answered = (await calls()) as { result?: string; deny?: string };
+
+    expect(tools).toEqual([]);
+    expect(answered).not.toEqual(FROM_SERVER);
+    expect(answered.result).toMatch(/compacted when this turn ends/);
+  });
+
+  it.each([
+    { what: "an interactive session", interactive: true },
+    { what: "a session that is not interactive", interactive: false },
+  ])("answers a call in $what with the three figures Claude Code has at that moment", async ({ interactive }) => {
+    const { calls } = await setup({ interactive });
+
+    const answered = await calls(USAGE_TOOL);
+
+    expect(answered).toEqual({
+      result:
+        "Context: 58965 input tokens of a 1000000-token window (6%). These are the input tokens of this session's latest model request, uncached, cache-written and cache-read together, as Claude Code's status line gives them (context_window.total_input_tokens).",
+    });
+  });
+
+  it.each([
+    { what: "has no input figure and no share, as before the first response of a fresh or just-compacted window", context: { window: 1000000 } },
+    { what: "has an input figure but no share", context: { tokens: 58965, window: 1000000 } },
+  ])("answers with an error and no figure when Claude Code $what", async ({ context }) => {
+    const { calls, usage } = await setup();
+    usage.answer = () => Promise.resolve({ ...MEASURED, context });
+
+    const answered = (await calls(USAGE_TOOL)) as { result?: string; deny?: string };
+
+    expect(answered.result).toBeUndefined();
+    expect(answered.deny).toMatch(/size of this session's context is not known/i);
+    expect(answered.deny).not.toMatch(/\d/);
+  });
+
+  it("answers with an error that gives Claude Code's reason, and no figure, when Claude Code fails to report the figures", async () => {
+    const { calls, usage } = await setup();
+    // In the form Claude Code 2.1.322 rejects a mod's other calls with (see TURN_IN_PROGRESS).
+    const reason = "cc-session-pool: $.session.usage: the session is not bound";
+    usage.answer = () => Promise.reject(new Error(reason));
+
+    const answered = (await calls(USAGE_TOOL)) as { result?: string; deny?: string };
+
+    expect(answered.result).toBeUndefined();
+    expect(answered.deny).toContain(reason);
+  });
+
+  it("is refused, with no figure, when a subagent makes the call", async () => {
+    const { calls } = await setup();
+
+    const answered = (await calls(USAGE_TOOL, "agent-7")) as { result?: string; deny?: string };
+
+    expect(answered.result).toBeUndefined();
+    expect(answered.deny).toMatch(/only the session itself can call context_usage/i);
+    expect(answered.deny).not.toMatch(/\d/);
   });
 });
