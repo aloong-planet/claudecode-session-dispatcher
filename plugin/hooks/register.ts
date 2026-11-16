@@ -7,14 +7,24 @@
 // session this module is not loaded in, the call reaches the server, which types /compact and leaves the waking to
 // that hook.
 //
+// In every session, interactive or not, it also offers a tool of its own, context_usage, which answers the session
+// with the size of its own context as Claude Code's status line has it. A session this module is not loaded in has no
+// such tool, nor has one in which Claude Code refuses it, such as a session with no built-in tools: there the mod
+// writes Claude Code's reason into Claude Code's debug log alone.
+//
 // The module imports nothing: Claude Code gives a mod neither Node's modules nor the repository's packages. The types
 // below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322.
 
+/** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
+type ContextFigures = { tokens?: number; window: number; percent?: number };
 type Engine = {
   env: { get: (name: string) => Promise<string | undefined> };
   /** Reads a file's text; rejects when it cannot. */
   fs: { read: (path: string) => Promise<string> };
+  /** Declares a tool of the mod's own, which the model calls as `mcp__<plugin>__<name>`. */
+  tool: { register: (spec: { name: string; description: string; inputSchema: Record<string, unknown>; isDeferred: boolean }) => Promise<unknown> };
   session: {
+    usage: () => Promise<{ context: ContextFigures }>;
     id: () => Promise<string>;
     /** Rejects while a turn is in progress, and when the user cancels the compaction. */
     compact: (args: Record<string, never>) => Promise<{ skip?: string }>;
@@ -22,6 +32,8 @@ type Engine = {
   /** Starts a turn with `text` once the session is idle. */
   prompt: { submit: (args: { text: string }) => Promise<unknown> };
   clock: { after: (ms: number, run: () => void) => unknown };
+  /** Appends a line to the transcript, or with `{ to: "debug" }` to Claude Code's debug log alone (measured on 2.1.325). */
+  ui: { log: (text: string, options?: { to?: "transcript" | "debug" }) => void };
 };
 type Hook<Input> = ($: Engine, e: Input, next: (e: Input) => Promise<unknown>) => Promise<unknown>;
 /** Why a turn ended: with the model's answer, by the user's interrupt, on a refusal by the model, or on an API error. */
@@ -40,6 +52,22 @@ const WAKE_SENTENCE = "The compaction this session requested with compact_self h
 const ANSWER =
   "The conversation of this session is compacted when this turn ends, with nothing typed into its window, so end the turn now. When the compaction has finished, this session is woken.";
 const SUBAGENT_REFUSAL = "Only the session itself can call compact_self; a subagent cannot. Nothing was done.";
+/** The mod's own tool, as it registers it. */
+const USAGE_SPEC = {
+  name: "context_usage",
+  description:
+    "Reports the size of this session's own context: the input tokens of its latest model request, the context window of its model, and the share of the window they fill. Takes no arguments.",
+  inputSchema: { type: "object", properties: {} },
+  isDeferred: false,
+};
+/** The mod's own tool, under the name a session sees it by: Claude Code puts the plugin's name in front of it. */
+const USAGE_TOOL = "mcp__cc-session-pool__context_usage";
+const USAGE_EXPLANATION =
+  "These are the input tokens of this session's latest model request, uncached, cache-written and cache-read together, as Claude Code's status line gives them (context_window.total_input_tokens).";
+const USAGE_SUBAGENT_REFUSAL = "Only the session itself can call context_usage; a subagent cannot.";
+const REGISTRATION_REFUSED = "context_usage is not offered in this session: Claude Code refused to register it:";
+const SIZE_NOT_KNOWN =
+  "The size of this session's context is not known: Claude Code does not have all of its figures. It has none before the first model response after the session starts or its conversation is compacted.";
 /** The server's wake requests, under the user's home directory, in the form `src/wake.ts` writes them. */
 const WAKE_REQUESTS = ".claude-session-pool/wake-requests";
 const SESSION_ID = /^[A-Za-z0-9-]+$/;
@@ -126,15 +154,35 @@ async function compact($: Engine, state: State, asked: Request, turnEnd: number,
   await wake($, notCompleted(reported));
 }
 
+/** The answer to a call to the mod's own tool: the figures Claude Code has at that moment. */
+async function contextUsage($: Engine): Promise<{ result: string } | { deny: string }> {
+  let context: ContextFigures;
+  try {
+    ({ context } = await $.session.usage());
+  } catch (error) {
+    return { deny: `The size of this session's context could not be read: ${messageOf(error)}` };
+  }
+  const { tokens, window, percent } = context;
+  if (tokens === undefined || percent === undefined) return { deny: SIZE_NOT_KNOWN };
+  return { result: `Context: ${tokens} input tokens of a ${window}-token window (${percent}%). ${USAGE_EXPLANATION}` };
+}
+
 export const register = (on: On): void => {
   const state: State = { isInteractive: false, isTurnRunning: false, request: undefined, due: 0 };
 
-  on("session.start", ($, e, next) => {
+  on("session.start", async ($, e, next) => {
     state.isInteractive = e.isInteractive;
+    try {
+      await $.tool.register(USAGE_SPEC);
+    } catch (error) {
+      // The session goes without context_usage; the start of the session and compact_self go on as without it.
+      $.ui.log(`${REGISTRATION_REFUSED} ${messageOf(error)}`, { to: "debug" });
+    }
     return next(e);
   });
 
   on("tool.call", async ($, e, next) => {
+    if (e.tool === USAGE_TOOL) return e.agentId === undefined ? contextUsage($) : { deny: USAGE_SUBAGENT_REFUSAL };
     if (e.tool !== TOOL || !state.isInteractive) return next(e);
     if (e.agentId !== undefined) return { deny: SUBAGENT_REFUSAL };
     let sessionId: string;

@@ -148,7 +148,7 @@ describe("the plugin", () => {
     const { register } = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as { register: (on: (event: string, hook: Hook) => void) => void };
     const hooks = new Map<string, Hook>();
     register((event, hook) => void hooks.set(event, hook));
-    const engine = { session: { id: () => Promise.resolve("s-1") } };
+    const engine = { tool: { register: () => Promise.resolve({}) }, session: { id: () => Promise.resolve("s-1") } };
     const fromServer = { result: "from the server" };
     const [server] = Object.keys(manifest.mcpServers);
     await hooks.get("session.start")!(engine, { isInteractive: true }, () => Promise.resolve({}));
@@ -157,6 +157,24 @@ describe("the plugin", () => {
 
     expect(answered).not.toBe(fromServer);
     expect(answered).toEqual({ result: expect.stringMatching(/compacted when this turn ends/) as unknown });
+  });
+
+  it("carries a mod that answers the call to its own tool under the name Claude Code gives a tool this plugin registers", async () => {
+    type Hook = ($: unknown, e: unknown, next: () => Promise<unknown>) => Promise<unknown>;
+    const { register } = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as { register: (on: (event: string, hook: Hook) => void) => void };
+    const hooks = new Map<string, Hook>();
+    register((event, hook) => void hooks.set(event, hook));
+    const registered: { name: string }[] = [];
+    const engine = {
+      tool: { register: (spec: { name: string }) => (registered.push(spec), Promise.resolve({ tool: `mcp__${manifest.name}__${spec.name}` })) },
+      session: { usage: () => Promise.resolve({ startedAt: 0, context: { tokens: 37460, window: 1000000, percent: 4 }, rateLimits: [], cost: { usd: 0 } }) },
+    };
+    const fromServer = { result: "from the server" };
+    await hooks.get("session.start")!(engine, { isInteractive: false }, () => Promise.resolve({}));
+
+    const answered = await hooks.get("tool.call")!(engine, { tool: `mcp__${manifest.name}__${registered[0]!.name}` }, () => Promise.resolve(fromServer));
+
+    expect(answered).toEqual({ result: expect.stringMatching(/^Context: 37460 input tokens of a 1000000-token window \(4%\)\./) as unknown });
   });
 });
 
