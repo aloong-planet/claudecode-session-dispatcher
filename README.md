@@ -176,6 +176,10 @@ gives this as `context_window.total_input_tokens`).
   count.
 
 Below 200,000 tokens, do not compact; go on. When you cannot find the size out, compact.
+At each of these two points, take the size and decide before anything else. Until you have
+decided, load no skill, read no reference document and do nothing else of that step: what you
+read afterwards makes the size out of date, and if you compact, you load it all again when you
+are woken.
 
 Before compacting:
 - commit everything;
