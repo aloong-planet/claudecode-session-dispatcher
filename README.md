@@ -9,7 +9,7 @@ What the plugin does, in full, is in the spec, [docs/specs/claude-session-pool.m
 
 ## Requirements
 
-- **macOS with the Terminal app.** Worker sessions run in Terminal windows. When a session's call to `compact_self` is handled by the plugin's server rather than its mod (see [Tools](#tools)), it also needs the session to run in a Terminal window. On first use, macOS asks whether the session's terminal may control Terminal; this must be allowed.
+- **macOS with the Terminal app.** Worker sessions run in Terminal windows. When a session's call to `compact_self` is handled by the plugin's server rather than its mod (see [Tools](#tools)), it also needs the session to run in a Terminal window. The plugin opens and types into Terminal windows through Terminal's scripting interface; when macOS refuses that automation request, the tool returns the error.
 - **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Only Claude Code 2.1.322 has been tested.
 - **Node.js 22.18 or later**, found on the `PATH` of the sessions that load the plugin. The server and the hooks run on it directly, with no build step.
 - **pnpm**, to install the packages the server needs.
@@ -41,7 +41,7 @@ claude plugin marketplace remove cc-session-pool
 
 ## Start a dispatcher session
 
-Run `bin/claude-dispatcher` in the directory the pool should work in. Every argument is passed on to `claude`, for example `bin/claude-dispatcher --resume <session-id>`.
+In the directory the pool should work in, run the clone's start-up command, for example `~/src/claudecode-session-dispatcher/bin/claude-dispatcher`. Worker sessions start in that directory. Every argument is passed on to `claude`, for example `bin/claude-dispatcher --resume <session-id>`.
 
 - **Name.** A new session that is given no name gets `<directory name>-dispatcher`. The same name is kept when you resume it, so worker sessions keep reporting to a name that still answers. Pass `-n <name>` to choose another.
 - **The plugin.** When the plugin is installed and enabled in that directory from this clone, the session gets it from the installation. Otherwise the command loads it for that session alone with `--plugin-dir`, so a dispatcher session works without the installation too.
@@ -164,7 +164,8 @@ Before compacting:
 Then call `compact_self` as the last step of the turn and end the turn. When you are woken,
 reload the skills you use and carry on.
 
-A subagent never calls `compact_self`: it would compact the session that started it.
+A subagent never calls `compact_self`: where the call is not refused, it compacts the session,
+not the subagent.
 ```
 
 The 200,000-token threshold comes from one user's measurements over 30 days. There, a compaction below that size with 20 to 50 requests still to go cost more than it saved.
