@@ -1,8 +1,9 @@
 # claudecode-session-dispatcher
 
-`cc-session-pool` is a Claude Code plugin with two jobs:
+`cc-session-pool` is a Claude Code plugin with three jobs:
 
 - **Every session gets the tool `compact_self`.** A session uses it to compact its own conversation, and is woken afterwards so that it carries on, without anyone typing `/compact` or telling it to go on.
+- **Every session in which the plugin's mod runs gets the tool `context_usage`.** A session uses it to learn the size of its own context, as Claude Code's status line has it.
 - **A dispatcher session gets nine more tools.** With them it manages a pool of worker sessions that run in Terminal windows. It can open them, reset or compact their conversations, read their state, and close or replace them.
 
 What the plugin does, in full, is in the spec, [docs/specs/claude-session-pool.md](docs/specs/claude-session-pool.md).
@@ -45,15 +46,16 @@ In the directory the pool should work in, run the clone's start-up command, for 
 
 - **Name.** A new session that is given no name gets `<directory name>-dispatcher`. The same name is kept when you resume it, so worker sessions keep reporting to a name that still answers. Pass `-n <name>` to choose another.
 - **The plugin.** When the plugin is installed and enabled in that directory from this clone, the session gets it from the installation. Otherwise the command loads it for that session alone with `--plugin-dir`, so a dispatcher session works without the installation too.
-- **What makes a dispatcher session.** Only a session started through this command is a dispatcher session. Any other session, a worker session included, gets `compact_self` alone.
+- **What makes a dispatcher session.** Only a session started through this command is a dispatcher session. Any other session, a worker session included, gets only `compact_self`, and `context_usage` where the plugin's mod runs.
 
 ## Tools
 
-A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`.
+A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`, except `context_usage`: the plugin's mod offers that one itself, and a session sees it as `mcp__cc-session-pool__context_usage`.
 
 | Tool | Offered to | What it does |
 |---|---|---|
 | `compact_self` | every session | Compacts the session's own conversation when the current turn ends, then wakes the session. |
+| `context_usage` | every session in which the plugin's mod runs, interactive or not | Reports the size of the session's own context: the input tokens of its latest model request, the context window of its model, and the share of the window they fill. |
 | `init`, `open` | the dispatcher session | Open worker sessions in new Terminal windows, in the pool's directory, and add them to the roster. |
 | `adopt` | the dispatcher session | Adds a session you opened by hand to the roster. |
 | `status` | the dispatcher session | Lists each slot's state: `idle`, `busy`, `waiting` (and for what), `gone` or `ambiguous`. |
@@ -153,8 +155,15 @@ When you have the tool `compact_self`, compact your own context with it at these
 
 At points 4 and 5, first look at the size of your context: the input tokens of your latest
 model request, uncached, cache-written and cache-read together (Claude Code's status line
-gives this as `context_window.total_input_tokens`). Below 200,000 tokens, do not compact;
-go on. When you cannot find the size out, compact.
+gives this as `context_window.total_input_tokens`).
+- When you have the tool `context_usage`, call it: it returns this number.
+- Otherwise take it from your transcript, `~/.claude/projects/<project directory>/<session ID>.jsonl`
+  (a Bash command sees the session ID as `$CLAUDE_CODE_SESSION_ID`). In its last `assistant`
+  record that is not a subagent's, add up `input_tokens`, `cache_creation_input_tokens` and
+  `cache_read_input_tokens` of `message.usage`. A record from before the current turn does not
+  count.
+
+Below 200,000 tokens, do not compact; go on. When you cannot find the size out, compact.
 
 Before compacting:
 - commit everything;
@@ -177,9 +186,10 @@ pnpm install
 pnpm verify    # typecheck, lint and tests
 ```
 
-Two test files run only with `CLAUDE_SESSION_POOL_LIVE=1` set:
+Three test files run only with `CLAUDE_SESSION_POOL_LIVE=1` set:
 
 - `tests/plugin.live.test.ts` runs Claude Code's plugin validator on the plugin, and needs the `claude` program.
+- `tests/claude-session-pool.live.test.ts` starts a non-interactive Claude Code session that loads the plugin from the clone, and has it call `context_usage` on the smallest model. It needs the `claude` program and a login, and makes a few model requests.
 - `tests/terminal.live.test.ts` opens a real Terminal window, and needs Terminal running.
 
 ## Documentation
