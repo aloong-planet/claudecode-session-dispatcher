@@ -148,7 +148,7 @@ describe("the plugin", () => {
     const { register } = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as { register: (on: (event: string, hook: Hook) => void) => void };
     const hooks = new Map<string, Hook>();
     register((event, hook) => void hooks.set(event, hook));
-    const engine = { session: { id: () => Promise.resolve("s-1") } };
+    const engine = { tool: { register: () => Promise.resolve({}) }, session: { id: () => Promise.resolve("s-1") } };
     const fromServer = { result: "from the server" };
     const [server] = Object.keys(manifest.mcpServers);
     await hooks.get("session.start")!(engine, { isInteractive: true }, () => Promise.resolve({}));

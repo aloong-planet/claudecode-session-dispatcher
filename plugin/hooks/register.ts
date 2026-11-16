@@ -9,7 +9,8 @@
 //
 // In every session, interactive or not, it also offers a tool of its own, context_usage, which answers the session
 // with the size of its own context as Claude Code's status line has it. A session this module is not loaded in has no
-// such tool.
+// such tool, nor has one in which Claude Code refuses it, such as a session with no built-in tools: there the mod
+// writes Claude Code's reason into Claude Code's debug log alone.
 //
 // The module imports nothing: Claude Code gives a mod neither Node's modules nor the repository's packages. The types
 // below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322.
@@ -31,6 +32,8 @@ type Engine = {
   /** Starts a turn with `text` once the session is idle. */
   prompt: { submit: (args: { text: string }) => Promise<unknown> };
   clock: { after: (ms: number, run: () => void) => unknown };
+  /** Appends a line to the transcript, or with `{ to: "debug" }` to Claude Code's debug log alone (measured on 2.1.325). */
+  ui: { log: (text: string, options?: { to?: "transcript" | "debug" }) => void };
 };
 type Hook<Input> = ($: Engine, e: Input, next: (e: Input) => Promise<unknown>) => Promise<unknown>;
 /** Why a turn ended: with the model's answer, by the user's interrupt, on a refusal by the model, or on an API error. */
@@ -62,6 +65,7 @@ const USAGE_TOOL = "mcp__cc-session-pool__context_usage";
 const USAGE_EXPLANATION =
   "These are the input tokens of this session's latest model request, uncached, cache-written and cache-read together, as Claude Code's status line gives them (context_window.total_input_tokens).";
 const USAGE_SUBAGENT_REFUSAL = "Only the session itself can call context_usage; a subagent cannot.";
+const REGISTRATION_REFUSED = "context_usage is not offered in this session: Claude Code refused to register it:";
 const SIZE_NOT_KNOWN =
   "The size of this session's context is not known: Claude Code does not have all of its figures. It has none before the first model response after the session starts or its conversation is compacted.";
 /** The server's wake requests, under the user's home directory, in the form `src/wake.ts` writes them. */
@@ -170,8 +174,9 @@ export const register = (on: On): void => {
     state.isInteractive = e.isInteractive;
     try {
       await $.tool.register(USAGE_SPEC);
-    } catch {
+    } catch (error) {
       // The session goes without context_usage; the start of the session and compact_self go on as without it.
+      $.ui.log(`${REGISTRATION_REFUSED} ${messageOf(error)}`, { to: "debug" });
     }
     return next(e);
   });

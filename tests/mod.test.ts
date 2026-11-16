@@ -26,6 +26,8 @@ const notCompleted = (reason: string) =>
 const TURN_IN_PROGRESS = "cc-session-pool: $.session.compact: a turn is in flight; the conversation compacts between turns";
 /** What Claude Code 2.1.322 rejects a mod's compaction with when the user presses Escape during it. */
 const CANCELED = "cc-session-pool: $.session.compact: Compaction canceled.";
+/** What Claude Code 2.1.325 rejects a mod's tool with in a session started with no built-in tools. */
+const REGISTRATION_REFUSED = 'cc-session-pool: $.tool.register: "context_usage" refused: this session has no built-in tools (--tools ""), so it takes none from plugins';
 const SESSION = "c97a8f9a-26a0-473f-8829-eeb79f7298e0";
 const OTHER_SESSION = "78744021-cd3b-490e-b601-5575fbb91cd6";
 /** What the server's tool would have returned, had the call reached it. */
@@ -71,13 +73,16 @@ async function setup({ interactive = true, told = true, registerFails = false } 
   const tools: unknown[] = [];
   /** What Claude Code answers the mod's request for the session's figures with. */
   const usage = { answer: (): Promise<unknown> => Promise.resolve(MEASURED) };
+  /** The lines the mod logged, with where it sent each. */
+  const logs: { text: string; options?: unknown }[] = [];
   const engine = {
+    ui: { log: (text: string, options?: unknown) => void logs.push({ text, options }) },
     env: { get: (name: string) => Promise.resolve(name === "HOME" ? home : undefined) },
     fs: { read: (path: string) => Promise.resolve().then(() => readFileSync(path, "utf8")) },
     tool: {
       register: (spec: { name: string }) =>
         registerFails
-          ? Promise.reject(new Error("cc-session-pool: $.tool.register: the tool could not be registered"))
+          ? Promise.reject(new Error(REGISTRATION_REFUSED))
           : (tools.push(spec), Promise.resolve({ tool: `mcp__cc-session-pool__${spec.name}` })),
     },
     session: {
@@ -106,6 +111,7 @@ async function setup({ interactive = true, told = true, registerFails = false } 
     timers,
     tools,
     usage,
+    logs,
     /** A call to a tool; resolves to what the model receives for it. */
     calls: (tool = TOOL, agentId?: string) => tell("tool.call", { tool, tool_use_id: "toolu_01", ...(agentId === undefined ? {} : { agentId }) }, FROM_SERVER),
     turnStarts: () => tell("turn.start", { text: "", turnId: "t" }),
@@ -475,12 +481,14 @@ describe("the tool context_usage", () => {
     ]);
   });
 
-  it("is missing when Claude Code refuses to register it, and the mod still answers compact_self", async () => {
-    const { calls, tools } = await setup({ registerFails: true });
+  it("is missing when Claude Code refuses to register it, which leaves Claude Code's reason in its debug log alone, and the mod still answers compact_self", async () => {
+    const { calls, tools, logs } = await setup({ registerFails: true });
 
     const answered = (await calls()) as { result?: string; deny?: string };
 
     expect(tools).toEqual([]);
+    expect(logs).toEqual([{ text: expect.stringContaining(REGISTRATION_REFUSED) as unknown, options: { to: "debug" } }]);
+    expect(logs[0]!.text).toMatch(/context_usage is not offered in this session/);
     expect(answered).not.toEqual(FROM_SERVER);
     expect(answered.result).toMatch(/compacted when this turn ends/);
   });
@@ -488,15 +496,17 @@ describe("the tool context_usage", () => {
   it.each([
     { what: "an interactive session", interactive: true },
     { what: "a session that is not interactive", interactive: false },
-  ])("answers a call in $what with the three figures Claude Code has at that moment", async ({ interactive }) => {
-    const { calls } = await setup({ interactive });
+  ])("answers each call in $what with the three figures Claude Code has at the moment of that call", async ({ interactive }) => {
+    const { calls, usage } = await setup({ interactive });
+    const explanation =
+      "These are the input tokens of this session's latest model request, uncached, cache-written and cache-read together, as Claude Code's status line gives them (context_window.total_input_tokens).";
 
-    const answered = await calls(USAGE_TOOL);
+    const first = await calls(USAGE_TOOL);
+    usage.answer = () => Promise.resolve({ ...MEASURED, context: { tokens: 190000, window: 1000000, percent: 19 } });
+    const second = await calls(USAGE_TOOL);
 
-    expect(answered).toEqual({
-      result:
-        "Context: 58965 input tokens of a 1000000-token window (6%). These are the input tokens of this session's latest model request, uncached, cache-written and cache-read together, as Claude Code's status line gives them (context_window.total_input_tokens).",
-    });
+    expect(first).toEqual({ result: `Context: 58965 input tokens of a 1000000-token window (6%). ${explanation}` });
+    expect(second).toEqual({ result: `Context: 190000 input tokens of a 1000000-token window (19%). ${explanation}` });
   });
 
   it.each([
