@@ -1,6 +1,6 @@
 # claude-session-pool
 
-A Claude Code plugin whose MCP server lets one Claude Code session open, reset, compact and close a set of interactive Claude Code sessions running in Terminal windows on the same Mac, and offers every session that loads it a tool with which that session compacts its own conversation; the plugin's mod, or where it does not run a hook of the plugin, wakes that session afterwards. It exists so that a session handing out tickets no longer needs a person to create its worker sessions or to type `/clear` and `/compact` into them.
+A Claude Code plugin whose MCP server lets one Claude Code session open, reset, compact and close a set of interactive Claude Code sessions running in Terminal windows on the same Mac, and offers every session that loads it a tool with which that session compacts its own conversation; the plugin's mod, or where it does not run a hook of the plugin, wakes that session afterwards. Where the plugin's mod runs and Claude Code accepts the mod's tool, the plugin also offers every session a tool that reports the size of its own context. It exists so that a session handing out tickets no longer needs a person to create its worker sessions or to type `/clear` and `/compact` into them.
 
 ## Language
 
