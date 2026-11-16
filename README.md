@@ -50,7 +50,7 @@ claude --continue              # the most recent session in the current director
 ```
 
 - **An ordinary session.** A resumed session, or one started by plain `claude`, gets from the plugin's server only `compact_self`, and `context_usage` from the plugin's mod where the mod runs and Claude Code accepts its tool (see [Tools](#tools)). The session compacts itself with `compact_self` at the points its instructions name: see [When a session compacts](#when-a-session-compacts), which also tells this apart from Claude Code's own automatic compaction.
-- **A dispatcher session.** A session started through the start-up command is a dispatcher session and gets every tool in [Tools](#tools). Use them as needed; see [Start a dispatcher session](#start-a-dispatcher-session).
+- **A dispatcher session.** A session started through the start-up command is a dispatcher session and gets every tool in [Tools](#tools), `context_usage` with the same exception. Use them as needed; see [Start a dispatcher session](#start-a-dispatcher-session).
 
 ## Start a dispatcher session
 
