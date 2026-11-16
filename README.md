@@ -40,6 +40,18 @@ claude plugin uninstall cc-session-pool@cc-session-pool
 claude plugin marketplace remove cc-session-pool
 ```
 
+## Use it
+
+Claude Code loads plugins when a session starts. A session that was already running when you installed the plugin does not have it: exit it and resume it.
+
+```sh
+claude --resume <session-id>   # a session by ID or name; without a value, a picker
+claude --continue              # the most recent session in the current directory
+```
+
+- **An ordinary session.** A resumed session, or one started by plain `claude`, gets from the plugin's server only `compact_self`, and `context_usage` from the plugin's mod where the mod runs and Claude Code accepts its tool (see [Tools](#tools)). The session compacts itself with `compact_self` at the points its instructions name: see [When a session compacts](#when-a-session-compacts), which also tells this apart from Claude Code's own automatic compaction.
+- **A dispatcher session.** A session started through the start-up command is a dispatcher session and gets every tool in [Tools](#tools). Use them as needed; see [Start a dispatcher session](#start-a-dispatcher-session).
+
 ## Start a dispatcher session
 
 In the directory the pool should work in, run the clone's start-up command, for example `~/src/claudecode-session-dispatcher/bin/claude-dispatcher`. Worker sessions start in that directory. Every argument is passed on to `claude`, for example `bin/claude-dispatcher --resume <session-id>`.
