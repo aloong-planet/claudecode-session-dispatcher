@@ -4,19 +4,19 @@
 
 ## Context
 
-A dispatcher session needs worker sessions that it can create, reset and close without the owner. Claude Code offers background sessions (`claude --bg`) with shell commands to start, stop and delete them. It also runs ordinary interactive sessions in terminal windows, which nothing in Claude Code can open, clear or compact from outside. The owner wants every worker session to be a normal terminal window that can be watched and typed into.
+A dispatcher session needs worker sessions that it can create, reset and close without the owner. Claude Code offers background sessions (`claude --bg`) with shell commands to manage them, and runs interactive sessions in terminal windows, which nothing in Claude Code can open, clear or compact from outside. The owner wants every worker session to be an ordinary terminal window that can be watched and typed into.
 
 ## Options
 
 1. **Interactive sessions in macOS Terminal windows, driven through Terminal's scripting interface**
-2. Background sessions (`claude --bg`, `claude stop`, `claude rm`). Rejected by the owner on 2026-11-10: worker sessions must be interactive sessions started in a terminal. Drawbacks found the same day: by default a background session may not edit the main checkout, which conflicts with writing working records there; its process is stopped after about an hour of idleness, after which a cross-session message no longer reaches it; and it has no window.
+2. Background sessions (`claude --bg`, `claude stop`, `claude rm`). Rejected by the owner on 2026-11-10, who wants interactive sessions started in a terminal; they also may not edit the main checkout by default, are stopped after about an hour of idleness so that a cross-session message no longer reaches them, and have no window.
 3. Agent teams. Rejected: the feature is experimental, teammates' permission prompts surface in the lead session, and teammates are not restored when the lead session is resumed.
 4. Subagents of the dispatcher session. Rejected: their results return into the dispatcher session's own context, and the owner has no separate window in which to watch one or take it over.
 5. tmux panes driven with `send-keys`. Rejected: it needs software that is not installed, and Terminal's own scripting interface does the same job.
 
 ## Decision
 
-We run worker sessions as interactive Claude Code sessions in macOS Terminal windows (option 1). The server opens them with Terminal's `do script`, types `/clear` and `/compact` into their tabs, and closes their windows.
+We run worker sessions as interactive Claude Code sessions in macOS Terminal windows (option 1). The server opens them with Terminal's `do script`, types `/compact` into their tabs, and closes their windows; it types `/clear` only where ADR-0003 does not deliver it.
 
 ## Consequences
 

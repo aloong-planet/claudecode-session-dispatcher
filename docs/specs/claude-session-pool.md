@@ -1,6 +1,6 @@
 # claude-session-pool
 
-> Related: [ADR-0001](../adr/0001-interactive-terminal-worker-sessions.md), [ADR-0002](../adr/0002-wake-by-hook-plugin-delivery.md)
+> Related: [ADR-0001](../adr/0001-interactive-terminal-worker-sessions.md), [ADR-0002](../adr/0002-wake-by-hook-plugin-delivery.md), [ADR-0003](../adr/0003-clear-by-order-file-through-the-mod.md)
 
 ## Problem Statement
 
@@ -16,7 +16,7 @@ Each time the dispatcher session is restarted, Claude Code gives it a new genera
 
 A Claude Code plugin that carries an MCP server, two hooks and a mod. The server offers two levels of access.
 
-To the dispatcher session it offers the tools that manage a pool. Through them the dispatcher session opens worker sessions in Terminal windows, registers ones the owner opened, resets or compacts a worker session's conversation by typing the command into its window, reads the real state of every slot, closes or replaces a worker session, and takes a slot off the roster.
+To the dispatcher session it offers the tools that manage a pool. Through them the dispatcher session opens worker sessions in Terminal windows, registers ones the owner opened, resets a worker session's conversation through the plugin's mod, or by typing where the plugin does not run in it, compacts one by typing the command into its window, reads the real state of every slot, closes or replaces a worker session, and takes a slot off the roster.
 
 To every session that has the server, the dispatcher session included, it offers one tool with which the session compacts its own conversation; when the compaction has finished, the session is woken so that it carries on. Where the plugin's mod runs in the session, the mod compacts the conversation and wakes the session, and nothing is typed. In any other session the server types `/compact` into the session's Terminal window, and a hook of the plugin wakes the session.
 
@@ -49,8 +49,8 @@ As a dispatcher session, I register worker sessions the owner opened by hand, so
 
 As a dispatcher session, I reset a worker session's conversation when its ticket is done, so that the next ticket starts with empty context and the owner does not type `/clear`.
 
-- claude-session-pool::US-003/AC-01: `clear` on a slot delivers `/clear` as a typed command under claude-session-pool::REQ-002 and returns once the slot's session ID has changed. The result states the old and the new session ID. The slot keeps its name, its Terminal window and its process.
-- claude-session-pool::US-003/AC-02: When the session ID has not changed 30 seconds after the command was typed, `clear` returns an error stating that the command was typed and not confirmed. It does not type again.
+- claude-session-pool::US-003/AC-01: `clear` on a slot delivers `/clear` under claude-session-pool::REQ-007 and returns once the slot's session ID has changed. The result states the old and the new session ID, and whether the command was delivered as a clear order or typed. The slot keeps its name, its Terminal window and its process.
+- claude-session-pool::US-003/AC-02: When the session ID has not changed 30 seconds after the command was delivered, `clear` returns an error stating that the clear order was written, or the command typed, and not confirmed. It types nothing afterwards, and it removes a clear order that still stands.
 
 ### claude-session-pool::US-004 Shrink a slot's conversation before its pull request
 
@@ -137,11 +137,11 @@ As a session, I learn the size of my own context when I need it, so that I decid
 ### claude-session-pool::REQ-001 Only slots, and never the dispatcher session
 
 - claude-session-pool::REQ-001/AC-01: `clear`, `compact`, `close`, `recycle` and `release` refuse a name that is not a slot in the roster, and act on no session.
-- claude-session-pool::REQ-001/AC-02: No tool types into, ends or registers the dispatcher session, with one exception: `compact_self` called by the dispatcher session compacts the dispatcher session under claude-session-pool::US-008, and types into it where the server handles the call.
+- claude-session-pool::REQ-001/AC-02: No tool types into, writes a clear order for, ends or registers the dispatcher session, with one exception: `compact_self` called by the dispatcher session compacts the dispatcher session under claude-session-pool::US-008, and types into it where the server handles the call.
 
-### claude-session-pool::REQ-002 Delivering a typed command
+### claude-session-pool::REQ-002 Delivering a command to a slot's session
 
-- claude-session-pool::REQ-002/AC-01: A typed command is typed only while the slot's session is idle. When it is not idle, the tool waits up to 60 seconds for it to become idle; if it is still not idle, the tool refuses, types nothing, and states the slot's state and what it is waiting for.
+- claude-session-pool::REQ-002/AC-01: A typed command is typed, and a clear order is written, only while the slot's session is idle. When it is not idle, the tool waits up to 60 seconds for it to become idle; if it is still not idle, the tool refuses, types and writes nothing, and states the slot's state and what it is waiting for.
 - claude-session-pool::REQ-002/AC-02: Text that is sitting in the session's input box when the command is typed is discarded. It is not submitted as a message, and the command still runs.
 - claude-session-pool::REQ-002/AC-03: The command is typed into the Terminal tab that hosts the slot's session, without bringing that window to the front. When no such tab is found, or the slot is `gone` or `ambiguous`, the tool refuses and types nothing.
 
@@ -156,7 +156,7 @@ A slot added by one server process is a slot for the next server process started
 ### claude-session-pool::REQ-005 Refusals and failures are reported, not hidden
 
 - claude-session-pool::REQ-005/AC-01: Every refusal and failure is returned as a tool error whose text states the reason and the state the server observed; no tool reports success for a step it did not confirm.
-- claude-session-pool::REQ-005/AC-02: When a step that cannot be taken back has been done (a window opened, a command typed, a session ended) and what follows fails, the error says that the step was done.
+- claude-session-pool::REQ-005/AC-02: When a step that cannot be taken back has been done (a window opened, a command typed, a clear order written, a session ended) and what follows fails, the error says that the step was done.
 - claude-session-pool::REQ-005/AC-03: A session listing that fails while a tool waits after such a step does not end the wait. The wait goes on to its limit, and an error at the limit includes the listing's error.
 - claude-session-pool::REQ-005/AC-04: When the slot's session disappears, or another process comes to answer to the slot's name, while `clear` or `compact` waits, the tool returns at once and states the slot's state.
 
@@ -166,11 +166,16 @@ A slot added by one server process is a slot for the next server process started
 - claude-session-pool::REQ-006/AC-02: To any other attached session the server offers `compact_self` alone. The other nine tools are not listed there, and a call to one of them is answered with an error and does nothing.
 - claude-session-pool::REQ-006/AC-03: A session is a dispatcher session only when the start-up command started it. A worker session the server opened, a session started with `claude` directly, and a session started from inside a dispatcher session are not dispatcher sessions.
 
+### claude-session-pool::REQ-007 Delivering `clear` as a clear order or as a typed command
+
+- claude-session-pool::REQ-007/AC-01: When a hook record shows that the plugin's hooks run in the slot's session, `clear` writes a clear order for the session's present session ID once the session is idle (claude-session-pool::REQ-002/AC-01), and types nothing. When no such hook record exists, `clear` delivers `/clear` as a typed command under claude-session-pool::REQ-002. When the slot is `gone` or `ambiguous`, `clear` refuses and writes nothing.
+- claude-session-pool::REQ-007/AC-02: In a session in which the plugin's mod runs, the mod acts on a clear order only while it stands, both its file name and its content name the session's present session ID, and it was written less than 60 seconds ago. It then runs `/clear` once no turn is running in the session, which gives the session a new session ID, to which the order no longer applies. It acts on no other order.
+
 ## Constraints
 
 ### claude-session-pool::CON-001 Terminal on macOS only (direct acceptance)
 
-Applies to: the nine tools that manage a pool, and a `compact_self` call the server handles; worker sessions run in windows of the macOS Terminal application (ADR-0001), and a session in any other terminal, or a background session, cannot be opened, adopted or typed into. A `compact_self` call the mod answers (claude-session-pool::US-008/AC-08) types nothing and is not bound to Terminal.
+Applies to: the nine tools that manage a pool, and a `compact_self` call the server handles; worker sessions run in windows of the macOS Terminal application (ADR-0001), and a session in any other terminal, or a background session, cannot be opened, adopted or typed into. A `compact_self` call the mod answers (claude-session-pool::US-008/AC-08) and a `clear` delivered as a clear order (claude-session-pool::REQ-007/AC-01) type nothing and do not script Terminal.
 
 ### claude-session-pool::CON-002 How the server, the hooks and the mod reach a session
 
@@ -191,7 +196,7 @@ Applies to: `init`, `open`, `adopt`, `clear`, `compact`, `close`, `recycle`, `re
 - claude-session-pool::CON-003/AC-03: A `permissionMode` argument must be one of `auto`, `acceptEdits`, `default`, `plan` and `dontAsk`. Any other value, `bypassPermissions` included, is refused before anything is run.
 - claude-session-pool::CON-003/AC-04: A pool directory whose path contains spaces or quote characters is handled as that exact path.
 - claude-session-pool::CON-003/AC-05: When the name of the directory the start-up command is run in contains a control character, the command does not build a default name from it: where claude-session-pool::US-009 calls for the default name, it starts nothing and prints the advice to pass `-n`.
-- claude-session-pool::CON-003/AC-06: When the path of the plugin's directory contains a control character, the start-up command starts nothing, whatever arguments it was given, and prints the reason. A line break in that path would otherwise reach `claude` as further arguments.
+- claude-session-pool::CON-003/AC-06: When the path of the plugin's directory contains a control character, the start-up command starts nothing, whatever arguments it was given, and prints the reason.
 
 ### claude-session-pool::CON-004 Runtime (direct acceptance)
 
@@ -215,37 +220,32 @@ Slot states and how a slot moves between them:
 Boundaries and failures:
 
 - **A message reaches a slot's session between the idle check and the typing** of a typed command. The session starts a turn, and the interrupt that discards the input box (claude-session-pool::REQ-002/AC-02) ends that turn. The server does not detect this. A tool's result still follows its own confirmation rule.
-- **`clear` or `compact` on a slot that is `gone` or `ambiguous`**: refused under claude-session-pool::REQ-002/AC-03.
+- **`clear` or `compact` on a slot that is `gone` or `ambiguous`**: refused under claude-session-pool::REQ-007/AC-01 and claude-session-pool::REQ-002/AC-03.
 - **`close` or `recycle` on an `ambiguous` slot**: refused, with the number of sessions that answer to the name; `force` does not change this.
 - **`open` on a name that is a `gone` slot**: allowed; the slot becomes live again. On a live slot it is refused under claude-session-pool::US-001/AC-05. When the new session is not idle within 60 seconds, the slot stays in the roster and the error says so; the roster then records the new session if it is listed, and otherwise no session.
 - **Terminal cannot be scripted** (macOS refuses the automation request, or Terminal reports an error): the tool returns that error text; `open` adds no slot, and `compact_self` withdraws the wake request it left.
 - **The roster file cannot be parsed, or carries a version this server does not know**: every tool other than `compact_self` refuses and names the file; the file is not rewritten. `compact_self` does not read the roster.
-- **Two calls arrive at the same time**: among the nine tools other than `compact_self`, typing into Terminal and updating the roster happen one call at a time, so two calls never interleave keystrokes or lose a roster update. Of two `open` calls for one name, one proceeds and the other is refused without opening a window. Two `adopt` calls for one name register the slot once. `compact_self` does not wait for those calls: it types only into the tab of the attached session, into which no other tool of the same server process types (claude-session-pool::REQ-001/AC-02).
-- **The window the server opened holds other tabs when `close` ends its session**: Terminal's scripting interface cannot close a single tab, and closing the window would end the other tabs, so the session's tab stays (claude-session-pool::US-006/AC-02).
+- **Two calls arrive at the same time**: among the nine tools other than `compact_self`, typing into Terminal, writing a clear order and updating the roster happen one call at a time, so two calls never interleave keystrokes or lose a roster update. Of two `open` calls for one name, one proceeds and the other is refused without opening a window. Two `adopt` calls for one name register the slot once. `compact_self` does not wait for those calls: it types only into the tab of the attached session, into which no other tool of the same server process types (claude-session-pool::REQ-001/AC-02).
 - **Two dispatcher sessions are started in the same directory**: they share that directory's roster. Every call of the nine tools other than `compact_self` reads the roster file afresh, so each sees the other's changes.
 - **Text read from a Terminal window** (claude-session-pool::US-001/AC-06) is returned inside the error as quoted text; the server takes no action based on it.
 - **The dispatcher session ends while a `compact` call is waiting**: the wait is lost and no result is delivered; the compaction itself continues in the worker session, and a later `status` shows the slot's state.
 - **A session that is asked to end holds unsaved work**: `close` does not check for it; what a worker session must have finished before it is closed is decided by the dispatcher session.
-- **Text sits in the input box when `compact_self` types**: the command lands at the cursor, wherever in the text that is, and the text with the command in it is submitted as one message, which the model receives during the turn in progress; no compaction runs (claude-session-pool::US-008/AC-03). The server cannot discard the text first, because the interrupt that does so would end the turn that made the call.
 - **A prompt is on screen when `compact_self` is called**, for example because another tool call of the same turn waits for a permission answer: the session's state is `waiting`, and the tool refuses (claude-session-pool::US-008/AC-06). A Return typed then would answer the prompt (see "A session's state during a tool call"). The tool reads the session's state after it has found the tab, so that it runs no other program between that reading and the typing. A prompt that comes up after that reading is not detected, and the command is typed while it is on screen.
-- **The attached session does not run in a Terminal window** (another terminal application, an editor's terminal, the desktop application, a background or non-interactive session): where the mod answers the call, the session is compacted and woken (claude-session-pool::US-008/AC-08). Where it does not, the server still offers `compact_self` there, and the tool refuses (claude-session-pool::US-008/AC-06).
-- **The mod does not answer `compact_self` in a session**, because the session is not interactive or its Claude Code does not load the plugin's mod: a call to `compact_self` reaches the server and is handled as claude-session-pool::US-008/AC-01 to claude-session-pool::US-008/AC-07 state. Only the tool's result tells the model which way its call was handled. Where Claude Code does not load the mod, the session also has no `context_usage` (claude-session-pool::US-010/AC-01).
+- **The mod does not answer `compact_self` in a session**, because the session is not interactive or its Claude Code does not load the plugin's mod: the call reaches the server (claude-session-pool::US-008/AC-08). Only the tool's result tells the model which way its call was handled.
 - **Other tool calls are made in the same response as `context_usage`**: the figure is the input of the request that made the call (claude-session-pool::US-010/AC-02), so the results of those calls, and that of `context_usage` itself, are not in it; they count from the next request on. A large result, such as a long file read in that response, is missing from the figure until a later call.
-- **Claude Code compacts the conversation on its own after `compact_self` typed the command**: the hook does not wake the session after that compaction, and the wake request stays for the one the command starts.
-- **The session keeps working in the same turn after `compact_self` returned**: the command runs only when the turn ends, however much later that is, and the session is woken after the compaction (claude-session-pool::US-008/AC-07). A request the mod holds is likewise carried out only when the turn ends (claude-session-pool::US-008/AC-09).
 - **Text is typed into the session during the turn of a call the mod answered**: Claude Code hands it to the model during that turn. When it is still queued as the turn ends, the mod's compaction runs first, Claude Code then starts a turn with the text, and the turn the mod starts follows that one. Either way the conversation is compacted once and the session is woken once.
-- **A turn is in progress when the mod asks for the compaction**, for example because a message from another session started one as the turn of the call ended: Claude Code refuses the compaction, and claude-session-pool::US-008/AC-10 applies.
 - **Claude Code compacts the conversation on its own between a call the mod answered and the end of the turn**: the mod still asks for a compaction when the turn ends. When Claude Code refuses it because too little is left to compact, claude-session-pool::US-008/AC-11 applies.
 - **The session ends while the mod holds a request**: the request is kept in the session's process only, so it is gone, and a session resumed later is not compacted.
-- **The mod is loaded again while it holds a request or while a compaction it asked for runs**, which Claude Code does when a file under a directory given with `--plugin-dir` is saved: what the mod held is gone. In the one run measured, a save during the turn of a call left the conversation compacted and the session not woken, and nothing reported it. A dispatcher session for which the start-up command loaded the plugin with `--plugin-dir` (claude-session-pool::CON-002/AC-04) meets this when a file under `plugin/` is changed between its call and its wake. Whether Claude Code also loads the mod again when the files of an installed plugin that it uses in place are saved has not been measured.
+- **The mod is loaded again while it holds a request or while a compaction it asked for runs**, which Claude Code does when a file under a directory given with `--plugin-dir` is saved: what the mod held is gone, which can leave the conversation compacted and the session not woken, with nothing to report it. A dispatcher session for which the start-up command loaded the plugin with `--plugin-dir` (claude-session-pool::CON-002/AC-04) meets this when a file under `plugin/` is changed between its call and its wake. Whether Claude Code also loads the mod again when the files of an installed plugin that it uses in place are saved has not been measured.
 - **The conversation has a wake request and the plugin's hooks do not run in the session**: the mod leaves the waking to a hook that does not run, and the session stays idle after the compaction.
-- **The turn the mod starts after a compaction cannot be started**, because Claude Code or another plugin's hook drops the mod's prompt: the session stays idle, and nothing reports it. Claude Code drops a plugin's prompt when the user has stopped the session and typed nothing since.
+- **The turn the mod starts after a compaction cannot be started**, because Claude Code or another plugin's hook drops the mod's prompt: the session stays idle, and nothing reports it.
 - **A `Stop` hook keeps the turn of the call from ending**: what the mod is told then has not been measured, so it is not known whether the compaction runs late, runs more than once or is dropped. The plugin declares no `Stop` hook.
-- **The owner types `/compact` into a session whose conversation has a wake request**, or the dispatcher session compacts such a slot with `compact`: that compaction uses the request up, and the session is woken after it. `compact` reports its own result as it always does.
-- **The dispatcher session clears a slot whose conversation has a wake request**: the session gets a new session ID, and the request no longer applies to it (claude-session-pool::US-008/AC-07).
-- **The plugin's hooks do not run in a session**, for example because its settings switch all hooks off: no hook record exists for the session, and a `compact_self` call the server handles is refused (claude-session-pool::US-008/AC-06). A call the mod answers does not depend on the hooks. Hooks that are switched off after the hook record was written are not detected: the command is typed, the compaction runs, and nothing wakes the session.
-- **`/clear` is followed at once by `compact_self`**: the hook record may still name the old session ID, and the tool then refuses (claude-session-pool::US-008/AC-06).
-- **A wake request whose compaction never comes**, because the command was not queued after all or the session ended first: the request stays on disk and wakes nothing, unless a later compaction in the same conversation, started by `/compact` or asked for by the mod, uses it up.
+- **The plugin's hooks do not run in a session**, for example because its settings switch all hooks off: no hook record exists for the session, and a `compact_self` call the server handles is refused (claude-session-pool::US-008/AC-06). Hooks that are switched off after the hook record was written are not detected: the command is typed, the compaction runs, and nothing wakes the session.
+- **`/clear` is followed at once by `compact_self` or by another `clear`**: the hook record may still name the old session ID. `compact_self` then refuses (claude-session-pool::US-008/AC-06), and `clear` types the command (claude-session-pool::REQ-007/AC-01).
+- **A turn starts in the worker session between the idle check and the clear order**: the turn is not interrupted, and the mod runs `/clear` when it ends (claude-session-pool::REQ-007/AC-02). When that is more than 30 seconds after the order was written, `clear` has ended and removed the order (claude-session-pool::US-003/AC-02), so no clear follows.
+- **The plugin's hooks run in a worker session and its mod does not**, because its Claude Code does not load the mod: nothing acts on the order, and `clear` ends as claude-session-pool::US-003/AC-02 states.
+- **A process of the same user writes a clear order** for a session's present session ID, the dispatcher session's included: the mod acts on it as on the server's (claude-session-pool::REQ-007/AC-02), and nothing checks who wrote it (ADR-0003).
+- **The mod is loaded again, another plugin also names paths to watch, or the screen is locked**: whether Claude Code then tells the mod of a change under the directory of the clear orders, and tells it once, has not been measured.
 - **A subagent of the session calls `compact_self`**: where the mod answers calls, it refuses this one (claude-session-pool::US-008/AC-13). The server cannot tell the call from one made by the session itself, and where it handles the call it compacts the session.
 - **The `node` on a session's `PATH` is older than claude-session-pool::CON-004 requires**: the server does not start in that session, and Claude Code lists it as failed there; the hooks fail there too and write no hook record. Other sessions are not affected.
 - **The owner gives the dispatcher session a name that a live session already has**: the start-up command does not check a name it was given (claude-session-pool::US-009/AC-05), and Claude Code accepts the duplicate. A message addressed to that name may then reach either session.
@@ -270,8 +270,6 @@ The server offers these tools, to the sessions that claude-session-pool::REQ-006
 | `release` | `name` |
 | `compact_self` | none |
 
-Where the mod answers a call to `compact_self` (claude-session-pool::US-008/AC-08), the result is the mod's text, and the server's tool does not run.
-
 The mod registers one tool of its own, `context_usage`, with no arguments (claude-session-pool::US-010). Claude Code offers a tool that a mod registers under the name `mcp__<plugin>__<tool>`, so a session sees it as `mcp__cc-session-pool__context_usage`, without the server's prefix. Its result is the text `Context: <tokens> input tokens of a <window>-token window (<percent>%). These are the input tokens of this session's latest model request, uncached, cache-written and cache-read together, as Claude Code's status line gives them (context_window.total_input_tokens).`, with each number written in decimal digits and no separators.
 
 ### Facts about Claude Code and Terminal the behaviour rests on
@@ -287,9 +285,10 @@ The mod registers one tool of its own, `context_usage`, with no arguments (claud
 - **Typing during a turn.** The character U+0003 ends a turn in progress, so `compact_self` types `/compact` without it. Text typed during a turn goes into the input box at the cursor, and on Return the whole content of the box is queued; the transcript records it at once as a record with `"type": "queue-operation"`, `"operation": "enqueue"` and the queued text as `content`. With `fix the typo` in the box and the cursor before `typo`, a typed `/compact` is queued as `fix the /compacttypo`. A queued slash command runs when the turn ends. A queued text that is not a slash command is handed to the model during the turn in progress, before any queued slash command runs.
 - **A session's state during a tool call.** The session reports `busy` while one of its tool calls is in progress, and `waiting` while a prompt is on screen. A Return typed while a permission prompt is on screen accepts the answer the prompt highlights, which approves what the prompt asked about; text typed with it is not queued.
 - **After a compaction.** A compaction started by `/compact`, or one a mod asked for, leaves the session idle; nothing continues its work until a message arrives, a hook wakes it or a mod submits a prompt.
-- **Hooks around a compaction.** Claude Code runs a plugin's `SessionStart` hooks when a session starts or is resumed, after `/clear` and after every compaction, and its `PostCompact` hooks when a compaction has finished. Both receive the session's `session_id`; the `PostCompact` hooks also receive `trigger`, which is `manual` for a compaction started by `/compact` or asked for by a mod, and `auto` for one Claude Code started on its own. A command hook that is declared with `asyncRewake` and exits with code 2 makes an idle session start a turn at once. Claude Code hands the model what the hook wrote to its standard error stream, inside a system reminder that reads `Stop hook blocking error from command "PostCompact:manual": ` followed by that text; this is why the sentence of claude-session-pool::US-008/AC-05 says that it is not an error.
+- **Hooks around a compaction.** Claude Code runs a plugin's `SessionStart` hooks when a session starts or is resumed, after `/clear` and after every compaction, and its `PostCompact` hooks when a compaction has finished. Both receive the session's `session_id`; the `PostCompact` hooks also receive `trigger`, which is `manual` for a compaction started by `/compact` or asked for by a mod, and `auto` for one Claude Code started on its own. A command hook that is declared with `asyncRewake` and exits with code 2 makes an idle session start a turn at once. Claude Code hands the model what the hook wrote to its standard error stream, inside a system reminder that reads `Stop hook blocking error from command "PostCompact:manual": ` followed by that text.
 - **Mods.** A plugin's hooks file can name a hooks module beside its command hooks; Claude Code loads that module, the plugin's mod, into the session's own process, in a session that is not interactive as well. Claude Code tells the mod when a session starts and whether it is interactive. It tells the mod of each tool call before the tool runs, a call to a tool of the plugin's server included, under the tool's full name and with the ID of the subagent that made it, if one did; the mod can return the result itself, and the tool then does not run. It tells the mod when a turn of the session starts and when it ends, and why it ended: with the model's answer, because the user interrupted it, on a refusal by the model, or on an API error. The mod can ask Claude Code to compact the conversation. Claude Code rejects that when it is asked while the mod is answering a tool call, and while a turn or another compaction is in progress, with a message that says a conversation compacts between turns; it reports a compaction that a hook vetoed, and, when the user presses Escape during the compaction, rejects it with a message that ends in `Compaction canceled.` The mod can submit a prompt, which starts a turn once the session is idle; the model reads it as `The cc-session-pool plugin sent a message:`, the text, and a closing remark of Claude Code's that a plugin submitted this prompt between turns. Claude Code drops such a prompt when the user has stopped the session and typed nothing since. The mod can read and write files under the user's home directory. Claude Code's validator for plugins accepts a mod only when it passes the interface Claude Code hands it to functions declared at the top of the module. All of this was measured on Claude Code 2.1.322.
 - **A mod's own tool and the context figures.** A mod can register a tool when it is told that the session starts. Claude Code lists the tool under `mcp__<plugin>__<name>`, in a session that is not interactive as well, puts its definition in the tool list from the start when the mod asks for that, and tells the mod of each call to it as of any other tool call. The mod can read the figures of Claude Code's status line: the input tokens of the latest response, uncached, cache-written and cache-read together (`total_input_tokens`), the context window of the session's model (`context_window_size`), and the first over the second as a whole percentage (`used_percentage`). Claude Code documents the input figure and the percentage as absent until the first response after the session started or was compacted. Read while the mod answers a tool call, the input figure is that of the request that made the call, in the middle of a turn as well. The registration and the figures were measured on Claude Code 2.1.322, in a session that was not interactive and in an interactive one; the absence before the first response is documented, not measured. Claude Code refuses the registration in a session started with `--tools ""`, with an error whose message says that the session has no built-in tools and so takes none from plugins; a mod can write a line into Claude Code's debug log alone, led by the plugin's name. Both were measured on Claude Code 2.1.325.
+- **A mod's file watch and `/clear`.** The result that a mod's `SessionStart` hook returns can name paths. Claude Code then tells the mod when a file under them is added, changed or removed, and keeps doing so after a `/clear`, which runs the mod's `SessionStart` hook again with the source `clear`. The mod can ask Claude Code to run `/clear`, which Claude Code runs once the session is idle. Measured on Claude Code 2.1.327.
 - **Confirming a clear.** `/clear` gives the session a new `sessionId` and leaves its `pid` and `name` unchanged.
 - **Confirming a compaction.** A session's transcript is the file `<sessionId>.jsonl` in a subdirectory of `~/.claude/projects/`, with one JSON object per line. A finished compaction appends a record with `"type": "system"`, `"subtype": "compact_boundary"` and a `timestamp`. A line that is still being written is not valid JSON and is not counted; the server looks only at what was appended after the command was typed. Claude Code does not document this file as a stable interface; claude-session-pool::US-004/AC-04 and claude-session-pool::US-008/AC-06 cover the case where it cannot be read. A session reports `busy` while it compacts.
 - **Session names.** Claude Code gives a session that is started without a name a generated name, and generates a new one every time that session is started or resumed; the generated name is not stored. A name given with `-n` or `--name`, at a start or at a resume, or with `/rename`, is stored in the session's transcript as a record with `"type": "custom-title"` and the name as `customTitle`. Claude Code restores a stored name on every later resume and keeps it across `/clear`. A name given at a resume replaces a stored one. Claude Code accepts two live sessions under one name.
@@ -308,7 +307,7 @@ The mod registers one tool of its own, `context_usage`, with no arguments (claud
 - A missing file means an empty roster. A file whose `version` is not `1`, whose `directory` differs from the pool directory, or that is not valid JSON, is handled as the "cannot be parsed" failure above.
 - The file is replaced atomically on every change.
 
-### Hooks, hook records and wake requests
+### Hooks, hook records, wake requests and clear orders
 
 The plugin declares two command hooks, each run with `node` and with its program and arguments given separately.
 
@@ -320,9 +319,10 @@ Given an event other than these two, or input without a session ID, the hook wri
 Files:
 
 - A hook record is the file `~/.claude-session-pool/hooks/<pid>.json`, where `<pid>` is the process ID of the session, which is the hook's parent process. Content: a JSON object with `version` (the number `1`), `pid` and `sessionId`, the session ID the hook received.
-- A `compact_self` call the server handles takes the plugin's hooks to run in the attached session only when the hook record named after the server's parent process exists and its `sessionId` is the attached session's present session ID. Because the `SessionStart` hook runs again after `/clear`, the record follows the conversation.
+- The server takes the plugin's hooks to run in a session, for a `compact_self` call it handles and for a `clear`, only when the hook record named after the session's process exists and its `sessionId` is the session's present session ID. The process is the server's parent process for `compact_self` and the slot's session's for `clear`. Because the `SessionStart` hook runs again after `/clear`, the record follows the conversation.
 - A wake request is the file `~/.claude-session-pool/wake-requests/<sessionId>.json`. Content: a JSON object with `version` (the number `1`), `sessionId` and `requestedAt`, the time `compact_self` left it, in ISO 8601 form in UTC.
-- A file of either kind that is not valid JSON, whose `version` is not `1`, or whose other fields are not in the form stated here, is treated as absent; `compact_self` writes over such a wake request. A session ID that contains anything but letters, digits and hyphens names no wake request.
+- A clear order is the file `~/.claude-session-pool/clear-orders/<sessionId>.json`, with the same content, `requestedAt` being the time `clear` wrote it. `clear` removes it once it has confirmed the clear and when it ends unconfirmed; nothing else removes it, so one left behind applies to no session after 60 seconds or after the session's next `/clear`.
+- A file of any of these kinds that is not valid JSON, whose `version` is not `1`, or whose other fields are not in the form stated here, is treated as absent; `compact_self` writes over such a wake request, and `clear` over such a clear order. A session ID that contains anything but letters, digits and hyphens names no wake request and no clear order.
 - Each file is replaced atomically when it is written.
 
 ### Mod
@@ -334,23 +334,9 @@ The plugin's hooks file names one hooks module, the mod, beside the two command 
 - For `compact_self`, it holds at most one request for a session, in the memory of the session's process, and writes no file. A request records the session ID of the conversation it was made in; claude-session-pool::US-008/AC-12 takes the conversation as cleared when the session has another ID at the moment the compaction is due.
 - It takes a refusal of the compaction as caused by a turn in progress (claude-session-pool::US-008/AC-10) when it has been told of a turn of the session that started and has not ended, or when the refusal's message says that a conversation compacts between turns.
 - It takes a refusal whose message ends in `Compaction canceled.` as the owner's cancellation (claude-session-pool::US-008/AC-12).
-- Before it asks for the compaction, the mod reads the conversation's wake request, the file under `~/.claude-session-pool/wake-requests/` that the section "Hooks, hook records and wake requests" describes, and counts it only when the hook would: valid JSON in the form stated there, naming the conversation. It reads it before, because the hook deletes it as the compaction finishes. A file it cannot read counts as absent.
+- Before it asks for the compaction, the mod reads the conversation's wake request, the file under `~/.claude-session-pool/wake-requests/` that the section "Hooks, hook records, wake requests and clear orders" describes, and counts it only when the hook would: valid JSON in the form stated there, naming the conversation. A file it cannot read counts as absent.
+- For `clear`, at every start of the session, the start after a `/clear` included, it has Claude Code watch the directory of the clear orders. It looks for the order named after the session's present session ID when Claude Code tells it of a change there and when a turn ends, and counts the order only when it stands and its content is valid JSON in the form stated in that section, names the session and is less than 60 seconds old. A file it cannot read counts as absent.
 - A call that the mod cannot tie to a conversation, because Claude Code does not give it the session's ID, reaches the server. A session whose start the mod was not told of counts as not interactive, so its calls reach the server too.
-
-### Time limits
-
-| Wait | Limit |
-|---|---|
-| A slot becoming idle before a typed command | 60 seconds |
-| A newly opened session becoming idle | 60 seconds |
-| The session ID changing after `/clear` | 30 seconds |
-| A session becoming busy after `/compact` | 20 seconds |
-| A compaction record appearing once the session is idle again | 10 seconds |
-| A compaction being recorded | 30 minutes, or `timeoutMinutes` |
-| A session's process exiting | 15 seconds |
-| `/compact` being shown as queued after `compact_self` typed it | 10 seconds |
-| A wake request standing in the way of another `compact_self` call | 30 minutes |
-| The mod asking again for a compaction that was refused because a turn was in progress | 2 seconds, up to 5 times |
 
 ### Start-up command
 
@@ -366,10 +352,6 @@ The command looks for the transcript of a session it resumes as the server does:
 
 The plugin's directory is `plugin/` in the repository. The repository holds a marketplace, also named `cc-session-pool`, that lists the plugin by that relative path. The installation of claude-session-pool::CON-002/AC-02 is two commands, each run once: `claude plugin marketplace add <absolute path of the repository>`, then `claude plugin install cc-session-pool@cc-session-pool`. It is removed with `claude plugin uninstall cc-session-pool@cc-session-pool` and `claude plugin marketplace remove cc-session-pool`.
 
-Installed this way the plugin is used in place, so a change in the repository reaches every session started after it. With this installation the start-up command of the same repository loads no plugin of its own (claude-session-pool::CON-002/AC-04).
-
-The programs that the plugin's server entry and hook declarations run lie in the repository, outside the plugin's directory, and the server needs the packages installed in the repository. The plugin therefore works only where Claude Code uses it in place: loaded with `--plugin-dir` from the repository, or installed from the marketplace added from the repository's path on this Mac. A copy of the plugin's directory alone does not work.
-
 ## Out of Scope
 
 - **Ticket state.** The server does not know whether a ticket's pull request is merged, its worktree removed or its test processes stopped; checking these before a slot is cleared or closed stays with the dispatcher session.
@@ -377,7 +359,8 @@ The programs that the plugin's server entry and hook declarations run lie in the
 - **Sending work to a slot.** Ticket briefs and answers go through cross-session messages, which the dispatcher session already uses.
 - **Background sessions.** Worker sessions are interactive sessions in Terminal windows; `claude --bg` sessions are not opened or adopted.
 - **Terminals other than Terminal.** The things that work elsewhere are a `compact_self` call the mod answers (claude-session-pool::US-008/AC-08) and `context_usage` (claude-session-pool::US-010).
-- **Resetting or compacting a worker session through the mod.** `clear` and `compact` on a slot deliver typed commands, as before.
+- **Compacting a worker session through the mod.** `compact` on a slot delivers a typed command; a worker session compacts itself with `compact_self`.
+- **Opening a window without Terminal.** `open`, `init` and `recycle` open the window by scripting Terminal; replacing Terminal with another way to open it is a separate decision (ADR-0001).
 - **Windows.** Not supported; nothing in this plugin has been run there.
 - **Changing the owner's permission settings.** No auto-mode rule is added or proposed by the server.
 - **A pool that spans several directories.**
@@ -388,7 +371,7 @@ The programs that the plugin's server entry and hook declarations run lie in the
 - **Choosing what the model is told after a self-compaction.** It is always the sentence of claude-session-pool::US-008/AC-05, or that of claude-session-pool::US-008/AC-11 when the compaction did not complete; what the session does next is its own decision.
 - **Installing the plugin.** The owner installs and removes it.
 - **Installing the plugin from anywhere but the repository on this Mac.** A marketplace on a git host, or any other source from which Claude Code copies the plugin's directory, is not supported.
-- **Confirming a slot's compaction through the hooks.** `compact` on a slot reads the worker session's transcript, as before.
+- **Confirming a slot's compaction through the hooks.** `compact` on a slot reads the worker session's transcript.
 - **Cleaning up wake requests.** A wake request whose compaction never comes is a small file that stays; nothing deletes it.
 - **Running `claude` subcommands through the start-up command.** The command adds its arguments to whatever it is given, as for a session start, and a subcommand such as `agents` or `mcp` rejects them. Subcommands are run with `claude` itself.
 - **Names of sessions other than the dispatcher session.** A worker session the server opens is named after its slot; a session the owner starts or adopts keeps whatever name Claude Code or the owner gave it.
