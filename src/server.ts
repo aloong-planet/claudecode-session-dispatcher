@@ -17,6 +17,7 @@ const DISPATCHER_MARK = "CLAUDE_SESSION_POOL_DISPATCHER_PID";
 
 // The attached session is the process that started this one.
 const sessionPid = process.ppid;
+const wake = new WakeState(STATE_DIRECTORY);
 const adapters = {
   sessions: new ClaudeCli(run),
   terminal: new TerminalApp(run),
@@ -32,12 +33,13 @@ const adapters = {
 const startedByStartupCommand = process.env[DISPATCHER_MARK] === String(sessionPid);
 
 await createServer({
-  selfCompaction: new SelfCompaction({ sessionPid, wake: new WakeState(STATE_DIRECTORY), ...adapters }),
+  selfCompaction: new SelfCompaction({ sessionPid, wake, ...adapters }),
   pool: startedByStartupCommand
     ? new Pool({
         directory: process.env.CLAUDE_PROJECT_DIR ?? process.cwd(),
         dispatcherPid: sessionPid,
         rosterRoot: STATE_DIRECTORY,
+        wake,
         ...adapters,
       })
     : undefined,

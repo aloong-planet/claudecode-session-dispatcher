@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Clock, Launch, Processes, SessionEntry, SessionLister, TabRef, Terminal } from "../../src/ports.ts";
 
@@ -67,7 +67,20 @@ export class FakeMac {
   woken: { at: number; pid: number; sessionId: string; text: string }[] = [];
   /** The largest number of commands that were being typed at the same moment. */
   mostTypingAtOnce = 0;
+  /**
+   * The directory where clear orders appear, which the plugin's mod watches in every session of this Mac. Left out:
+   * nothing is watched. Claude Code tells the mod about a file one second after it appears or changes. The mod then
+   * runs `/clear` in the session that the file is named after, once that session is idle, when the file's content
+   * names the session, is version 1 and is less than 60 seconds old; a busy session is looked at again when its
+   * turn ends.
+   */
+  modWatches: string | undefined;
+  /** Whether Claude Code loads the plugin's mod. When it does not, a clear order appears and nothing acts on it. */
+  modRuns = true;
+  /** Every file that appeared or changed under `modWatches`: when, its name and what it held. */
+  ordersSeen: { at: number; file: string; content: unknown }[] = [];
 
+  private seenOrderFiles = new Map<string, string>();
   private stopped = false;
   private typingNow = 0;
   private nextPid = 5000;
@@ -215,6 +228,7 @@ export class FakeMac {
     session.queued = [];
     session.status = "idle";
     if (queued.includes("/compact")) this.compact(session, 0);
+    this.modActsOnOrder(session);
   }
 
   /** A compaction that Claude Code starts on its own, finished at once. */
@@ -289,6 +303,44 @@ export class FakeMac {
     });
   }
 
+  /** Claude Code's file watch on `modWatches`: what is new or changed since the last look is told to the mod a second later. */
+  private watchOrders(): void {
+    if (!this.modWatches) return;
+    let names: string[];
+    try {
+      names = readdirSync(this.modWatches).filter((name) => name.endsWith(".json"));
+    } catch {
+      names = [];
+    }
+    for (const file of [...this.seenOrderFiles.keys()]) if (!names.includes(file)) this.seenOrderFiles.delete(file);
+    for (const file of names) {
+      const text = readFileSync(join(this.modWatches, file), "utf8");
+      if (this.seenOrderFiles.get(file) === text) continue;
+      this.seenOrderFiles.set(file, text);
+      this.ordersSeen.push({ at: this.now, file, content: JSON.parse(text) as unknown });
+      this.at(1000, () => {
+        for (const session of [...this.sessions]) this.modActsOnOrder(session);
+      });
+    }
+  }
+
+  /** What the mod in `session` does about the clear order named after the session's present session ID. */
+  private modActsOnOrder(session: FakeSession): void {
+    if (!this.modWatches || !this.modRuns || session.sessionId === undefined || !this.sessions.includes(session)) return;
+    let order: Record<string, unknown>;
+    try {
+      order = JSON.parse(readFileSync(join(this.modWatches, `${session.sessionId}.json`), "utf8")) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const requestedAt = typeof order.requestedAt === "string" ? Date.parse(order.requestedAt) : Number.NaN;
+    const age = this.now - requestedAt;
+    if (order.version !== 1 || order.sessionId !== session.sessionId || !(age >= 0 && age < 60_000)) return;
+    if (session.status !== "idle") return;
+    session.sessionId = this.newSessionId();
+    this.sessionStarted(session, "clear");
+  }
+
   /** Claude Code runs the plugin's `SessionStart` hook whenever a session starts on a conversation. */
   private sessionStarted(session: FakeSession, source: "startup" | "clear" | "compact"): void {
     this.hooks?.({ hook_event_name: "SessionStart", session_id: session.sessionId, source }, session.pid!);
@@ -346,6 +398,7 @@ export class FakeMac {
     this.pumping = true;
     setImmediate(() => {
       this.pumping = false;
+      this.watchOrders();
       if (this.timers.length === 0) return;
       const next = Math.min(...this.timers.map((timer) => timer.at));
       this.now = next;

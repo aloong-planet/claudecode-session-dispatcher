@@ -38,8 +38,9 @@ async function connect({ dispatcher } = { dispatcher: true }) {
   fakes.push(mac);
   mac.transcriptRoot = transcriptRoot;
   const wake = new WakeState(join(home, "state"));
-  // The plugin's hooks run in the sessions of this Mac, so the attached session has a hook record.
+  // The plugin's hooks and its mod run in the sessions of this Mac, so the attached session has a hook record.
   mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid) });
+  mac.modWatches = join(home, "state", "clear-orders");
   const attached = mac.addSession({ name: "attached", cwd: directory, pid: ATTACHED_PID, status: "busy" });
   mac.appendTurnRecord(attached.sessionId!);
   const adapters = {
@@ -50,7 +51,7 @@ async function connect({ dispatcher } = { dispatcher: true }) {
     clock: mac.clock,
   };
   const selfCompaction = new SelfCompaction({ sessionPid: ATTACHED_PID, wake, ...adapters });
-  const pool = dispatcher ? new Pool({ directory, dispatcherPid: ATTACHED_PID, rosterRoot: join(home, "rosters"), ...adapters }) : undefined;
+  const pool = dispatcher ? new Pool({ directory, dispatcherPid: ATTACHED_PID, rosterRoot: join(home, "rosters"), wake, ...adapters }) : undefined;
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await createServer({ selfCompaction, pool }).connect(serverSide);
   const client = new Client({ name: "test", version: "0" });
