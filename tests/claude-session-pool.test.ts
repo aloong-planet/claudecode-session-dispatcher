@@ -4,8 +4,13 @@
  * Claude Code's session listing, the Terminal application and process signals are replaced by `FakeMac`; rosters
  * and transcripts are real files in a temporary directory; time is the fake's virtual clock.
  *
+ * The plugin's hooks and mod are stood in for by the fake: it runs the real hook program, which writes the hook records,
+ * and it models what Claude Code and the mod do about a clear order (see `modWatches` in `support/fake-mac.ts`). The real
+ * mod is covered by `mod.test.ts`, which hands it a fake engine.
+ *
  * Not covered here, because it needs the real programs: what `/clear` and `/compact` do inside Claude Code, that
- * Ctrl+C empties its input box, and that Terminal puts the earlier window back in front. The Terminal part is
+ * Ctrl+C empties its input box, that Terminal puts the earlier window back in front, and that Claude Code's file watch
+ * tells the mod of a clear order, with the mod running `/clear` while the screen is locked. The Terminal part is
  * covered by `terminal.live.test.ts` when it is enabled; the Claude Code part is checked by hand with real sessions.
  *
  * Two boundaries of the spec cannot be driven at all. A message that reaches a slot between the idle check and the

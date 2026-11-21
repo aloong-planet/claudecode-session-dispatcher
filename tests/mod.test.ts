@@ -6,8 +6,9 @@
  *
  * Not covered here, because it needs a real Claude Code session: that Claude Code loads the mod from the plugin's
  * hooks file, tells it of these events with these inputs, lets its answer stand in for the server's tool, and starts
- * a turn when it submits a prompt. All of that was measured by hand on Claude Code 2.1.322 and is to be measured
- * again when Claude Code changes its interface for mods. That Claude Code lists the mod's own tool and gives it the
+ * a turn when it submits a prompt; that it watches the paths a `SessionStart` hook names, tells the mod of a file
+ * changed under them, and runs `/clear` once the session is idle. All of that was measured by hand on Claude Code
+ * 2.1.322, and the last on 2.1.327, and is to be measured again when Claude Code changes its interface for mods. That Claude Code lists the mod's own tool and gives it the
  * figures of the calling request is checked live in `claude-session-pool.live.test.ts`.
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -32,6 +33,9 @@ const SESSION = "c97a8f9a-26a0-473f-8829-eeb79f7298e0";
 const OTHER_SESSION = "78744021-cd3b-490e-b601-5575fbb91cd6";
 /** The session ID that a `/clear` in the session gives it. */
 const AFTER_CLEAR = "5b1f9a3e-7a49-4c0e-92a7-0f6f4f7c1a11";
+/** What Claude Code 2.1.327 rejects a mod's `$.command.run` with when it is called while a `classic.FileChanged` event is dispatched. */
+const FROM_FILE_CHANGED =
+  "cc-session-pool: $.command.run: called from a classic.FileChanged hook, it would wait on the turn this hook is holding; run it from a later event (turn.complete) (host check)";
 /** What the server's tool would have returned, had the call reached it. */
 const FROM_SERVER = { result: "from the server" };
 /** The mod's own tool, under the name a session sees it by. */
@@ -83,6 +87,8 @@ async function setup({ interactive = true, told = true, registerFails = false, h
   /** The slash commands the mod asked Claude Code to run. `fails`: Claude Code rejects them. `held`: they are queued and have not run. */
   const commands: string[] = [];
   const clears = { fails: false, held: false, release: () => {} };
+  /** Whether a `classic.FileChanged` event is being dispatched: Claude Code rejects `$.command.run` while it is. */
+  const dispatching = { fileChanged: false };
   /** The paths the mod read. */
   const reads: string[] = [];
   const engine = {
@@ -112,6 +118,7 @@ async function setup({ interactive = true, told = true, registerFails = false, h
       run: ({ command }: { command: string }) => {
         commands.push(command);
         if (clears.fails) return Promise.reject(new Error("cc-session-pool: $.command.run: the session is stopping"));
+        if (dispatching.fileChanged) return Promise.reject(new Error(FROM_FILE_CHANGED));
         const ran = () => {
           // A /clear gives the session a new session ID.
           if (command === "clear") session.id = AFTER_CLEAR;
@@ -121,7 +128,8 @@ async function setup({ interactive = true, told = true, registerFails = false, h
       },
     },
   };
-  const tell = (event: string, input: unknown, fromCore: unknown = {}) => hooks.get(event)!(engine, input, () => Promise.resolve(fromCore));
+  const tell = (event: string, input: unknown, fromCore: unknown = {}, below?: Promise<unknown>) =>
+    hooks.get(event)!(engine, input, () => (below === undefined ? Promise.resolve(fromCore) : below.then(() => fromCore)));
   if (told) await tell("session.start", { cwd: "/somewhere", surface: interactive ? "terminal" : null, isInteractive: interactive });
 
   return {
@@ -134,11 +142,27 @@ async function setup({ interactive = true, told = true, registerFails = false, h
     reads,
     /** Claude Code tells the mod that a session started, by way of the classic `SessionStart` hook; resolves to what the mod answers. */
     classicStart: (source: string, fromCore?: unknown) => tell("classic.SessionStart", { hook_event_name: "SessionStart", source }, fromCore),
-    /** Claude Code tells the mod that a file under a path it asked to watch was added, changed or removed. */
-    fileChanged: async (file = `${home}/.claude-session-pool/clear-orders/${SESSION}.json`, event = "add") => {
-      const answered = await tell("classic.FileChanged", { hook_event_name: "FileChanged", file_path: file, event }, undefined);
+    /**
+     * Claude Code tells the mod that a file under a path it asked to watch was added, changed or removed. The event is
+     * dispatched until the hook has returned and a moment after; `holdBelow` makes a hook under the mod's keep it so until
+     * the returned `release` is called. Then whatever the mod set a timer of no delay for runs.
+     */
+    fileChanged: async (file = `${home}/.claude-session-pool/clear-orders/${SESSION}.json`, event = "add", { holdBelow = false } = {}) => {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      dispatching.fileChanged = true;
+      const dispatch = tell("classic.FileChanged", { hook_event_name: "FileChanged", file_path: file, event }, undefined, holdBelow ? gate : undefined);
       await settle();
-      return answered;
+      if (holdBelow) await runTimers(0);
+      const end = async () => {
+        release();
+        await dispatch;
+        await settle();
+        dispatching.fileChanged = false;
+        await runTimers(0);
+      };
+      if (!holdBelow) await end();
+      return { end };
     },
     compactions,
     prompts,
@@ -615,6 +639,7 @@ describe("a clear order that the server left for the session", () => {
     await context.fileChanged();
 
     expect(context.commands).toEqual(["clear"]);
+    expect(context.session.id).toBe(AFTER_CLEAR);
   });
 
   it("makes the mod wait until the turn that is running has ended", async () => {
@@ -627,6 +652,7 @@ describe("a clear order that the server left for the session", () => {
     await context.turnEnds();
 
     expect(context.commands).toEqual(["clear"]);
+    expect(context.session.id).toBe(AFTER_CLEAR);
   });
 
   it("does not make the mod run /clear when the order was removed while the turn was running", async () => {
@@ -724,17 +750,58 @@ describe("a clear order that the server left for the session", () => {
     expect(context.commands).toEqual([]);
   });
 
-  it("is dropped, and not acted on again, when Claude Code rejects the command", async () => {
+  it("is tried again every 2 seconds when Claude Code rejects the command, and given up after five more tries", async () => {
     const context = await setup();
     context.clears.fails = true;
     leave(context);
 
     await context.fileChanged();
+    for (let again = 0; again < 5; again += 1) {
+      expect(context.timers.map((timer) => timer.ms)).toEqual([2000]);
+      await context.runTimers(2000);
+    }
+
+    expect(context.commands).toEqual(Array<string>(6).fill("clear"));
+    expect(context.timers).toEqual([]);
+  });
+
+  it("makes the mod run /clear on a later try when the rejection was for a moment only", async () => {
+    const context = await setup();
+    context.clears.fails = true;
+    leave(context);
     await context.fileChanged();
-    await context.turnEnds();
+
+    context.clears.fails = false;
+    await context.runTimers(2000);
+
+    expect(context.commands).toEqual(["clear", "clear"]);
+    expect(context.session.id).toBe(AFTER_CLEAR);
+  });
+
+  it("makes the mod run /clear on a later try when a hook under its own holds the event that told it", async () => {
+    const context = await setup();
+    leave(context);
+
+    const held = await context.fileChanged(undefined, undefined, { holdBelow: true });
+    expect(context.commands).toEqual(["clear"]);
+    expect(context.session.id).toBe(SESSION);
+    await held.end();
+    await context.runTimers(2000);
+
+    expect(context.commands).toEqual(["clear", "clear"]);
+    expect(context.session.id).toBe(AFTER_CLEAR);
+  });
+
+  it("does not try again when the order was removed after Claude Code rejected the command", async () => {
+    const context = await setup();
+    context.clears.fails = true;
+    leave(context);
+    await context.fileChanged();
+
+    context.wake.removeClearOrder(SESSION);
+    await context.runTimers(2000);
 
     expect(context.commands).toEqual(["clear"]);
-    expect(context.timers).toEqual([]);
   });
 });
 

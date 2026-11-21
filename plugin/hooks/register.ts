@@ -160,8 +160,12 @@ async function orderedSessionId($: Engine): Promise<string | undefined> {
   }
 }
 
-/** Has Claude Code run /clear when a clear order stands for the session and no turn is running; a turn that ends brings it up again. */
-async function clearIfOrdered($: Engine, state: State): Promise<void> {
+/**
+ * Has Claude Code run /clear when a clear order stands for the session and no turn is running; a turn that ends brings it
+ * up again. Claude Code rejects the command while it is asked for from the event hook that is still running, which another
+ * plugin's slower hook under this one can keep so, so the call is made from a timer and tried again a little later.
+ */
+async function clearIfOrdered($: Engine, state: State, attempt: number): Promise<void> {
   if (state.isTurnRunning) return;
   const sessionId = await orderedSessionId($);
   if (sessionId === undefined || sessionId === state.clearing || state.isTurnRunning) return;
@@ -169,7 +173,9 @@ async function clearIfOrdered($: Engine, state: State): Promise<void> {
   try {
     await $.command.run({ command: "clear" });
   } catch {
-    // Claude Code did not take the command. The order is not acted on again; the server ends its wait and removes it.
+    // Claude Code did not take the command, and queued nothing. The order is looked at again while it stands.
+    state.clearing = undefined;
+    if (attempt < MAX_RETRIES) $.clock.after(RETRY_MS, () => void clearIfOrdered($, state, attempt + 1));
   }
 }
 
@@ -231,7 +237,7 @@ export const register = (on: On): void => {
   });
 
   on("classic.FileChanged", async ($, e, next) => {
-    void clearIfOrdered($, state);
+    $.clock.after(0, () => void clearIfOrdered($, state, 0));
     return next(e);
   });
 
@@ -271,7 +277,7 @@ export const register = (on: On): void => {
     const answered = await next(e);
     if (e.agentId !== undefined) return answered;
     state.isTurnRunning = false;
-    $.clock.after(0, () => void clearIfOrdered($, state));
+    $.clock.after(0, () => void clearIfOrdered($, state, 0));
     const asked = state.request;
     if (asked === undefined) return answered;
     state.due += 1;
