@@ -1,6 +1,6 @@
 # claude-session-pool
 
-> Related: [ADR-0001](../adr/0001-interactive-terminal-worker-sessions.md), [ADR-0002](../adr/0002-wake-by-hook-plugin-delivery.md), [ADR-0003](../adr/0003-clear-by-order-file-through-the-mod.md)
+> Related: [ADR-0001](../adr/0001-interactive-terminal-worker-sessions.md), [ADR-0002](../adr/0002-wake-by-hook-plugin-delivery.md), [ADR-0003](../adr/0003-clear-through-a-clear-order-the-mod-acts-on.md)
 
 ## Problem Statement
 
@@ -335,7 +335,7 @@ The plugin's hooks file names one hooks module, the mod, beside the two command 
 - It takes a refusal of the compaction as caused by a turn in progress (claude-session-pool::US-008/AC-10) when it has been told of a turn of the session that started and has not ended, or when the refusal's message says that a conversation compacts between turns.
 - It takes a refusal whose message ends in `Compaction canceled.` as the owner's cancellation (claude-session-pool::US-008/AC-12).
 - Before it asks for the compaction, the mod reads the conversation's wake request, the file under `~/.claude-session-pool/wake-requests/` that the section "Hooks, hook records, wake requests and clear orders" describes, and counts it only when the hook would: valid JSON in the form stated there, naming the conversation. A file it cannot read counts as absent.
-- For `clear`, at every start of the session, the start after a `/clear` included, it has Claude Code watch the directory of the clear orders. It looks for the order named after the session's present session ID when Claude Code tells it of a change there and when a turn ends, and counts the order only when it stands and its content is valid JSON in the form stated in that section, names the session and is less than 60 seconds old. A file it cannot read counts as absent.
+- For `clear`, at every start of the session, the start after a `/clear` included, it has Claude Code watch the directory of the clear orders. It looks for the order named after the session's present session ID when Claude Code tells it of a change and when a turn ends, and counts the order only when it stands and its content is valid JSON in the form stated in that section, names the session and is less than 60 seconds old. A file it cannot read counts as absent.
 - A call that the mod cannot tie to a conversation, because Claude Code does not give it the session's ID, reaches the server. A session whose start the mod was not told of counts as not interactive, so its calls reach the server too.
 
 ### Start-up command

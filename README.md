@@ -86,7 +86,7 @@ A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`, except `
 - **With the mod.** When a hook record shows that the plugin's hooks run in the worker session, the server leaves a clear order for the session's session ID, a file under `~/.claude-session-pool/clear-orders/`, and types nothing. The plugin's mod in that session has Claude Code watch that directory and runs `/clear` once no turn is running. The result says that the command was delivered as a clear order. If the session ID has not changed 30 seconds after the order was written, `clear` reports that the order was written and not confirmed, removes it, and does not type the command instead. A mod that Claude Code loads again, as it does when a file under a `--plugin-dir` directory is saved, is told of no more changes until the session starts again, so `clear` reports the same for that session.
 - **By typing.** With no such hook record, the server types `/clear` into the session's Terminal tab, as `compact` does, and the result says so.
 
-Only `clear` has the first way. `compact`, `open`, `close` and `recycle` still use Terminal's scripting interface.
+Only `clear` has the first way. `compact`, `init`, `open`, `adopt`, `close` and `recycle` still use Terminal's scripting interface.
 
 ## Running the dispatcher
 

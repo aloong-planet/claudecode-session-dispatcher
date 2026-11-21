@@ -4,7 +4,7 @@
 
 ## Context
 
-A dispatcher session needs worker sessions that it can create, reset and close without the owner. Claude Code offers background sessions (`claude --bg`) with shell commands to manage them, and runs interactive sessions in terminal windows, which nothing in Claude Code can open, clear or compact from outside. The owner wants every worker session to be an ordinary terminal window that can be watched and typed into.
+A dispatcher session needs worker sessions that it can create, reset and close without the owner. Claude Code offers background sessions (`claude --bg`) with shell commands to manage them, and runs interactive sessions in terminal windows, which no built-in Claude Code command can open, clear or compact from outside. The owner wants every worker session to be an ordinary terminal window that can be watched and typed into.
 
 ## Options
 
@@ -21,7 +21,7 @@ We run worker sessions as interactive Claude Code sessions in macOS Terminal win
 ## Consequences
 
 - Positive: the owner sees every worker session as an ordinary window and can type into it. The sessions behave like the ones the owner used to open by hand, so the rest of the dispatcher session's procedure is unchanged.
-- Positive: `/clear` and `/compact`, which Claude Code gives no way to trigger from outside a session, can be run without the owner.
+- Positive: `/clear` and `/compact`, which no built-in Claude Code command triggers from outside a session, can be run without the owner (`/clear` through the mod, ADR-0003).
 - Negative: the server works only on macOS with the Terminal application.
 - Negative: a newly opened window takes keyboard focus for a moment, and keystrokes the owner types in that moment land in it.
 - Negative: commands are delivered as keystrokes. A message that reaches a session between the idle check and the typing has its turn interrupted.

@@ -1,4 +1,4 @@
-# ADR-0003: A worker session is cleared by an order file that the plugin's mod acts on, and by typing only where the plugin does not run
+# ADR-0003: A worker session is cleared through a clear order that the plugin's mod acts on, and by typing only where the plugin does not run
 
 - Status: Proposed
 
@@ -8,8 +8,8 @@ Typing `/clear` into a worker's Terminal tab fails while the Mac's screen is loc
 
 ## Options
 
-1. **The server writes an order file that names the conversation to clear by its session ID and is valid for 60 seconds, and the mod, notified by Claude Code's file watch, runs `/clear` once no turn is running. Where the plugin's hooks do not run in the worker, the server types `/clear` as before.**
-2. The same order file, with the mod checking the directory once a second. Rejected by the owner on 2026-11-21: it makes about 3,600 checks an hour in every idle worker, and the file watch clears an idle worker in the same time.
+1. **The server writes a clear order that names the conversation to clear by its session ID and is valid for 60 seconds, and the mod, notified by Claude Code's file watch, runs `/clear` once no turn is running. Where the plugin's hooks do not run in the worker, the server types `/clear` as before.**
+2. The same clear order, with the mod checking the directory once a second. Rejected by the owner on 2026-11-21: it makes about 3,600 checks an hour in every idle worker, and the file watch clears an idle worker in the same time.
 3. A cross-session message that the worker's mod takes in `session.receive` and answers with the clear. Rejected: the server cannot send one, so the dispatcher's mod would have to take the `clear` call and repeat the lookup, the wait and the confirmation in code that cannot import the server's.
 4. Typing for every worker, as before. Rejected by the owner on 2026-11-21: it cannot clear a worker while the screen is locked.
 5. Refusing to clear a worker without the plugin. Rejected: such a worker could not be cleared at all.
@@ -42,5 +42,5 @@ We adopt option 1.
 
 ## Sources
 
-- `~/research/claude-code-session-pool/compact-self-equivalents-in-plugin-marketplaces.md`, section 19, on Claude Code 2.1.327: an order file checked once a second cleared an idle one in 1.01 s; with the file watch an idle one was cleared in 1.03 s, a busy one 0.02 s after its turn ended, and the watch survived the clear.
+- `~/research/claude-code-session-pool/compact-self-equivalents-in-plugin-marketplaces.md`, section 19, on Claude Code 2.1.327: a clear order checked once a second cleared an idle one in 1.01 s; with the file watch an idle one was cleared in 1.03 s, a busy one 0.02 s after its turn ended, and the watch survived the clear.
 - The owner's choices of 2026-11-21 and 2026-11-22, each made among options put with their costs.
