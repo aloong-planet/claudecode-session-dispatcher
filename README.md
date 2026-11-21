@@ -11,7 +11,7 @@ What the plugin does, in full, is in the spec, [docs/specs/claude-session-pool.m
 ## Requirements
 
 - **macOS with the Terminal app.** Worker sessions run in Terminal windows. When a session's call to `compact_self` is handled by the plugin's server rather than its mod, or the dispatcher session's `clear` is typed instead of left as an order (see [Tools](#tools)), the session must run in a Terminal window too. The plugin opens and types into Terminal windows through Terminal's scripting interface; when macOS refuses that automation request, the tool returns the error.
-- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325, and the file watch that `clear` relies on was measured on 2.1.327.
+- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325. `clear` through the mod was measured on 2.1.327 only, with the screen unlocked; it has not been measured on earlier versions or on a locked screen.
 - **Node.js 22.18 or later**, found on the `PATH` of the sessions that load the plugin. The server and the hooks run on it directly, with no build step.
 - **pnpm**, to install the packages the server needs.
 
@@ -83,7 +83,7 @@ A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`, except `
 
 `clear` also works one of two ways:
 
-- **With the mod.** When a hook record shows that the plugin's hooks run in the worker session, the server leaves a clear order for the session's session ID, a file under `~/.claude-session-pool/clear-orders/`, and types nothing. The plugin's mod in that session has Claude Code watch that directory and runs `/clear` once no turn is running. The result says that the command was delivered as a clear order. If the session ID has not changed 30 seconds after the order was written, `clear` reports that the order was written and not confirmed, removes it, and does not type the command instead.
+- **With the mod.** When a hook record shows that the plugin's hooks run in the worker session, the server leaves a clear order for the session's session ID, a file under `~/.claude-session-pool/clear-orders/`, and types nothing. The plugin's mod in that session has Claude Code watch that directory and runs `/clear` once no turn is running. The result says that the command was delivered as a clear order. If the session ID has not changed 30 seconds after the order was written, `clear` reports that the order was written and not confirmed, removes it, and does not type the command instead. A mod that Claude Code loads again, as it does when a file under a `--plugin-dir` directory is saved, is told of no more changes until the session starts again, so `clear` reports the same for that session.
 - **By typing.** With no such hook record, the server types `/clear` into the session's Terminal tab, as `compact` does, and the result says so.
 
 Only `clear` has the first way. `compact`, `open`, `close` and `recycle` still use Terminal's scripting interface.
