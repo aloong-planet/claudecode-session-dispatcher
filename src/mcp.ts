@@ -84,7 +84,8 @@ function registerPoolTools(server: McpServer, pool: Pool): void {
   server.registerTool(
     "clear",
     {
-      description: "Reset a slot's conversation by typing /clear into its Terminal tab. Returns once the slot's session ID has changed.",
+      description:
+        "Reset a slot's conversation with /clear. Where the plugin's hooks run in the slot's session, leaves an order that the plugin's mod runs and types nothing; otherwise types /clear into its Terminal tab. Returns once the slot's session ID has changed, and says which way it was delivered.",
       inputSchema: { name },
     },
     async (args) => reply(await pool.clear(args)),

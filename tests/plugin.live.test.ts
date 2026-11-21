@@ -17,7 +17,7 @@ describe.skipIf(process.env.CLAUDE_SESSION_POOL_LIVE !== "1")("the plugin, live"
   it("passes Claude Code's validator, which names the hooks the mod adds", () => {
     const validated = spawnSync("claude", ["plugin", "validate", pluginDirectory], { encoding: "utf8", timeout: 60_000 });
 
-    expect(validated.stdout).toContain("./register.ts hooks: session.start, tool.call, turn.start, turn.complete");
+    expect(validated.stdout).toContain("./register.ts hooks: classic.SessionStart, classic.FileChanged, session.start, tool.call, turn.start, turn.complete");
     expect(validated.stdout).toContain("Validation passed");
     expect(validated.status).toBe(0);
   });
