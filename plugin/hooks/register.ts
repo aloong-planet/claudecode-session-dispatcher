@@ -10,9 +10,10 @@
 // It also runs /clear for the server's `clear` tool. The server leaves a clear order, a file named after the session's
 // session ID, in a directory that the mod has Claude Code watch; when Claude Code tells the mod of a change there, and
 // when a turn ends, the mod looks for the order of the session's present session ID and, if it stands and is less than a
-// minute old, has Claude Code run /clear once no turn is running. Nothing is typed into the window, so this works while
-// the screen is locked. A session that this module is not loaded in has no such order acted on: the server sees no
-// change of the session ID, and reports that the clear is not confirmed.
+// minute old, has Claude Code run /clear once no turn is running. Nothing is typed into the window and Terminal is not
+// scripted; whether this works while the screen is locked has not been measured. A session that this module is not
+// loaded in has no such order acted on: the server sees no change of the session ID, and reports that the clear is not
+// confirmed.
 //
 // In every session, interactive or not, it also offers a tool of its own, context_usage, which answers the session
 // with the size of its own context as Claude Code's status line has it. A session this module is not loaded in has no
@@ -20,7 +21,8 @@
 // writes Claude Code's reason into Claude Code's debug log alone.
 //
 // The module imports nothing: Claude Code gives a mod neither Node's modules nor the repository's packages. The types
-// below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322.
+// below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322; what the
+// clear order uses (the watch paths of classic.SessionStart, classic.FileChanged and $.command.run) was measured on 2.1.327.
 
 /** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
 type ContextFigures = { tokens?: number; window: number; percent?: number };

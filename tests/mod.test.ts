@@ -6,10 +6,11 @@
  *
  * Not covered here, because it needs a real Claude Code session: that Claude Code loads the mod from the plugin's
  * hooks file, tells it of these events with these inputs, lets its answer stand in for the server's tool, and starts
- * a turn when it submits a prompt; that it watches the paths a `SessionStart` hook names, tells the mod of a file
- * changed under them, and runs `/clear` once the session is idle. All of that was measured by hand on Claude Code
- * 2.1.322, and the last on 2.1.327, and is to be measured again when Claude Code changes its interface for mods. That Claude Code lists the mod's own tool and gives it the
- * figures of the calling request is checked live in `claude-session-pool.live.test.ts`.
+ * a turn when it submits a prompt (measured by hand on Claude Code 2.1.322); that it watches the paths a `SessionStart`
+ * hook names, tells the mod of a file changed under them, and runs `/clear` once the session is idle (measured by hand
+ * on Claude Code 2.1.327, with the screen unlocked). Both are to be measured again when Claude Code changes its
+ * interface for mods. That Claude Code lists the mod's own tool and gives it the figures of the calling request is
+ * checked live in `claude-session-pool.live.test.ts`.
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -145,24 +146,29 @@ async function setup({ interactive = true, told = true, registerFails = false, h
     /**
      * Claude Code tells the mod that a file under a path it asked to watch was added, changed or removed. The event is
      * dispatched until the hook has returned and a moment after; `holdBelow` makes a hook under the mod's keep it so until
-     * the returned `release` is called. Then whatever the mod set a timer of no delay for runs.
+     * the returned `release` is called. Then whatever the mod set a timer of no delay for runs. `fromCore` is what the
+     * hooks under the mod's answer; `answered` is what the mod answers (once `end` has run, when the event is held).
      */
-    fileChanged: async (file = `${home}/.claude-session-pool/clear-orders/${SESSION}.json`, event = "add", { holdBelow = false } = {}) => {
+    fileChanged: async (
+      file = `${home}/.claude-session-pool/clear-orders/${SESSION}.json`,
+      event = "add",
+      { holdBelow = false, fromCore = {} }: { holdBelow?: boolean; fromCore?: unknown } = {},
+    ) => {
       let release = () => {};
       const gate = new Promise<void>((resolve) => (release = resolve));
       dispatching.fileChanged = true;
-      const dispatch = tell("classic.FileChanged", { hook_event_name: "FileChanged", file_path: file, event }, undefined, holdBelow ? gate : undefined);
+      const dispatch = tell("classic.FileChanged", { hook_event_name: "FileChanged", file_path: file, event }, fromCore, holdBelow ? gate : undefined);
       await settle();
       if (holdBelow) await runTimers(0);
       const end = async () => {
         release();
-        await dispatch;
+        const answered = await dispatch;
         await settle();
         dispatching.fileChanged = false;
         await runTimers(0);
+        return answered;
       };
-      if (!holdBelow) await end();
-      return { end };
+      return { end, answered: holdBelow ? undefined : await end() };
     },
     compactions,
     prompts,
@@ -642,18 +648,31 @@ describe("a clear order that the server left for the session", () => {
     expect(context.session.id).toBe(AFTER_CLEAR);
   });
 
-  it("makes the mod wait until the turn that is running has ended", async () => {
+  it("is passed on to the hooks under the mod's own, which keep their answer", async () => {
     const context = await setup();
-    await context.turnStarts();
     leave(context);
 
-    await context.fileChanged();
-    expect(context.commands).toEqual([]);
-    await context.turnEnds();
+    const { answered } = await context.fileChanged(undefined, undefined, { fromCore: { answeredBy: "a hook under the mod's" } });
 
+    expect(answered).toEqual({ answeredBy: "a hook under the mod's" });
     expect(context.commands).toEqual(["clear"]);
-    expect(context.session.id).toBe(AFTER_CLEAR);
   });
+
+  it.each(["answer", "aborted", "error", "refusal"])(
+    "makes the mod wait until the turn that is running has ended, however it ended: %s",
+    async (reason) => {
+      const context = await setup();
+      await context.turnStarts();
+      leave(context);
+
+      await context.fileChanged();
+      expect(context.commands).toEqual([]);
+      await context.turnEnds(reason);
+
+      expect(context.commands).toEqual(["clear"]);
+      expect(context.session.id).toBe(AFTER_CLEAR);
+    },
+  );
 
   it("does not make the mod run /clear when the order was removed while the turn was running", async () => {
     const context = await setup();

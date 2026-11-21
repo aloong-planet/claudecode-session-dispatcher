@@ -10,8 +10,9 @@
  *
  * Not covered here, because it needs the real programs: what `/clear` and `/compact` do inside Claude Code, that
  * Ctrl+C empties its input box, that Terminal puts the earlier window back in front, and that Claude Code's file watch
- * tells the mod of a clear order, with the mod running `/clear` while the screen is locked. The Terminal part is
- * covered by `terminal.live.test.ts` when it is enabled; the Claude Code part is checked by hand with real sessions.
+ * tells the mod of a clear order, which the mod then runs. The Terminal part is covered by `terminal.live.test.ts` when it
+ * is enabled; the Claude Code part was checked by hand with real sessions on Claude Code 2.1.327. Nothing checked a
+ * `clear` while the screen is locked.
  *
  * Two boundaries of the spec cannot be driven at all. A message that reaches a slot between the idle check and the
  * typing: the server does not detect it, so there is nothing to assert. The dispatcher session ending while a
@@ -549,6 +550,23 @@ describe("clear, in a session in which the plugin's mod runs", () => {
     expect(outcome.text).toContain("is not a session ID, so no clear order was written for it");
     expect([existsSync(join(stateRoot, "escaped.json")), standingOrders(), mac.typed]).toEqual([false, [], []]);
   });
+
+  it.each([
+    { what: "Terminal cannot be scripted", spoil: (mac: FakeMac) => void (mac.terminalFailure = "Not authorized to send Apple events to Terminal. (-1743)") },
+    { what: "no Terminal tab hosts the slot", spoil: (mac: FakeMac) => void (mac.windowOf(mac.session("w1")).open = false) },
+  ])("delivers the order, which does not script Terminal, when $what", async ({ spoil }) => {
+    const { mac, pool, standingOrders } = setup({ plugin: "hooks and mod" });
+    await pool.open({ name: "w1" });
+    const oldId = mac.session("w1").sessionId;
+    spoil(mac);
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.text).toContain("Delivered as a clear order; nothing was typed.");
+    expect(mac.session("w1").sessionId).not.toBe(oldId);
+    expect([mac.typed, standingOrders()]).toEqual([[], []]);
+  });
 });
 
 describe("clear, when the plugin's hooks run in the session and its mod does not", () => {
@@ -582,24 +600,6 @@ describe("clear, when the plugin's hooks run in the session and its mod does not
     } finally {
       chmodSync(ordersDirectory, 0o755);
     }
-  });
-
-  it("does not clear the session when its turn ends after the order was removed", async () => {
-    const { mac, pool } = setup({ plugin: "hooks and mod" });
-    await pool.open({ name: "w1" });
-    const session = mac.session("w1");
-    const oldId = session.sessionId;
-    mac.at(500, () => {
-      session.status = "busy";
-    });
-    mac.at(40_000, () => mac.endTurn(session));
-
-    const outcome = await pool.clear({ name: "w1" });
-    await mac.clock.sleep(15_000);
-
-    expect(outcome.ok).toBe(false);
-    expect(outcome.text).toContain("not confirmed");
-    expect(session.sessionId).toBe(oldId);
   });
 
   it("returns at once when the slot's session disappears after the order was written", async () => {
@@ -829,6 +829,19 @@ describe("delivering a typed command", () => {
       'The slot "twice" is ambiguous, 2 sessions answer to this name; nothing was typed or written.',
       `No Terminal tab hosts the slot "tabless" (pid ${mac.session("tabless").pid}); nothing was typed.`,
     ]);
+    expect(mac.typed).toEqual([]);
+  });
+
+  it.each(
+    (["clear", "compact"] as const).flatMap((tool) => (["terminalFailure", "typingFailure"] as const).map((failure) => ({ tool, failure }))),
+  )("returns Terminal's own error and types nothing when $failure, for $tool", async ({ tool, failure }) => {
+    const { mac, pool } = setup();
+    await pool.open({ name: "w1" });
+    mac[failure] = "Not authorized to send Apple events to Terminal. (-1743)";
+
+    const outcome = await pool[tool]({ name: "w1" });
+
+    expect(outcome).toEqual({ ok: false, text: "Not authorized to send Apple events to Terminal. (-1743)" });
     expect(mac.typed).toEqual([]);
   });
 

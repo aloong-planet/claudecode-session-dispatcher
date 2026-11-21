@@ -211,7 +211,8 @@ export class Pool {
 
   private async clearSlot(name: string): Promise<string> {
     const before = await this.awaitIdle(name, "nothing was typed or written");
-    // A hook record for the session's present session ID shows that the plugin's hooks, and so its mod, run in it.
+    // A hook record for the session's present session ID shows that the plugin's hooks run in it. The plugin loads its mod
+    // with its hooks, but nothing shows that the mod runs: an order that nothing acts on is reported as not confirmed.
     if (before.sessionId !== undefined && this.deps.wake.hookRecord(before.pid) === before.sessionId) {
       return this.clearByOrder(name, before, before.sessionId);
     }
