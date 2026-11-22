@@ -13,7 +13,8 @@ Each record states one decision that is in force in this project, with the optio
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-interactive-terminal-worker-sessions.md) | Worker sessions are interactive sessions in Terminal windows, and are cleared through the plugin's mod where its hooks run | Proposed |
-| [0002](0002-wake-by-hook-plugin-delivery.md) | A session that compacts itself is woken by the plugin's mod, or by a hook where the mod does not run; the server, the hooks and the mod are one plugin | Proposed |
+| [0002](0002-wake-a-self-compacting-session.md) | A self-compacting session is woken by the plugin's mod, or by a hook where the mod does not run | Proposed |
+| [0004](0004-one-plugin-installed-once.md) | The server, the hooks and the mod are one plugin, installed once at user scope | Proposed |
 
 ## Retired numbers
 

@@ -6,7 +6,7 @@
 - **Every session in which the plugin's mod runs gets the tool `context_usage`.** A session uses it to learn the size of its own context, as Claude Code's status line has it. Where Claude Code refuses the mod's tool, as it does in a session started with `--tools ""`, the session goes without it, and the reason is in Claude Code's debug log (`claude --debug`).
 - **A dispatcher session gets nine more tools.** With them it manages a pool of worker sessions that run in Terminal windows. It can open them, reset or compact their conversations, read their state, and close or replace them.
 
-What the plugin does, in full, is in the spec, [docs/specs/claude-session-pool.md](docs/specs/claude-session-pool.md).
+What the plugin does, in full, is in the specs, listed in [docs/specs/README.md](docs/specs/README.md).
 
 ## Requirements
 
@@ -218,6 +218,6 @@ Three test files run only with `CLAUDE_SESSION_POOL_LIVE=1` set:
 
 ## Documentation
 
-- [docs/specs/claude-session-pool.md](docs/specs/claude-session-pool.md): the behaviour, its boundaries and the facts about Claude Code it rests on.
+- [docs/specs/](docs/specs/README.md): the behaviour of each feature, its boundaries and the facts about Claude Code it rests on.
 - [docs/adr/](docs/adr/): the decisions and the options they rejected.
 - [docs/CONTEXT.md](docs/CONTEXT.md): the terms used throughout.
