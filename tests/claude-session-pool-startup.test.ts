@@ -1,327 +1,263 @@
 /**
- * What Claude Code and a person run: the server, the hooks and the mod as the plugin declares them, and the start-up
- * command. All but the mod run as real processes; what the mod does is covered in `mod.test.ts`. `claude`, `ps` and `osascript` are replaced by scripts on PATH, so no Claude
- * Code session is started and Terminal is not touched.
+ * The start-up command: the arguments it adds to the arguments it was given, as a function of the arguments, the
+ * directory, the sessions on this Mac, what the resumed session's transcript shows and the installed plugins; and the
+ * command as a process, with `claude` replaced by a script on PATH, so that no Claude Code session is started.
  *
- * Not covered here, because it needs real Claude Code sessions: that Claude Code loads the plugin from these
- * declarations, starts its server and its hooks as children of the session with the session's environment
- * variables (which is how the start-up command's mark reaches the server), and wakes the session when the
- * `PostCompact` hook exits with code 2. Nor is what Claude Code does in a session the start-up command starts while
- * the plugin is also installed: that it offers each tool once, under the same names as without the installation,
- * and runs each hook once for an event. Nor is that Claude Code loads the mod the hooks file names, and that with the
- * plugin installed and also given by `--plugin-dir` it loads the mod once and so answers a call to `compact_self` once:
- * only the number of loads was measured, in print mode, where no call was made. All of these were checked by hand on Claude Code 2.1.322, the last three in
- * print mode under a throwaway configuration directory, and are to be checked again when Claude Code changes how it
- * loads plugins or runs hooks.
+ * Not covered here, because it needs real Claude Code sessions: what Claude Code does in a session the start-up command
+ * starts while the plugin is also installed. What was checked by hand is in the note at the head of
+ * `claude-session-pool-plugin.test.ts`.
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, describe, expect, it } from "vitest";
+import type { NameState } from "../src/adapters/transcripts.ts";
+import type { InstalledPlugin, SessionEntry } from "../src/ports.ts";
+import { startupArguments } from "../src/startup.ts";
+import { MARK, PROJECT_CONFIGURATION, USER_CONFIGURATION, pluginDirectory, repository, runsLogged } from "./support/plugin-processes.ts";
+import { SESSION } from "./support/sessions.ts";
+import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/temporary.ts";
 
-// The start-up command resolves symbolic links on its way to the repository, so the path is compared resolved.
-const repository = realpathSync(dirname(dirname(fileURLToPath(import.meta.url))));
-const pluginDirectory = join(repository, "plugin");
+afterEach(cleanUpTemporaryDirectories);
 
-const temporaryDirectories: string[] = [];
-afterEach(() => {
-  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
-});
-function temporaryDirectory(): string {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-session-pool-")));
-  temporaryDirectories.push(directory);
-  return directory;
-}
+const PLUGIN = ["--plugin-dir", "/repo/plugin"];
 
-type Program = { type?: string; command: string; args: string[] };
-type HookGroup = { matcher?: string; hooks: (Program & { asyncRewake?: boolean })[] };
-
-const readJson = (path: string) => JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-const manifest = readJson(join(pluginDirectory, ".claude-plugin", "plugin.json")) as {
-  name: string;
-  mcpServers: Record<string, Program & { alwaysLoad?: boolean; timeout?: number }>;
+type Situation = {
+  directory?: string;
+  pluginDirectory?: string;
+  /** The sessions on this Mac, or the reason why they cannot be listed. */
+  sessions?: SessionEntry[] | string;
+  nameState?: NameState;
+  /** The installed plugins, or the reason why they cannot be listed. */
+  plugins?: InstalledPlugin[] | string;
+  /** Symbolic links: a path, and the path it resolves to. */
+  links?: Record<string, string>;
 };
-const hooksFile = readJson(join(pluginDirectory, "hooks", "hooks.json")) as { modules: string[]; hooks: Record<string, HookGroup[]> };
-const declaredHooks = hooksFile.hooks;
 
-/** The arguments Claude Code runs a declared program with: it puts the plugin's directory where the declaration names it. */
-const argumentsOf = (program: Program) => program.args.map((argument) => argument.replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginDirectory));
-
-const POOL_TOOLS = ["adopt", "clear", "close", "compact", "init", "open", "recycle", "release", "status"];
-const SENTENCE = "The compaction this session requested with compact_self has finished. This is not an error. Continue the work that was in progress.";
-/** The variable in which the start-up command leaves the process ID of the session it starts. */
-const MARK = "CLAUDE_SESSION_POOL_DISPATCHER_PID";
-/** These tests start the server and the hooks themselves, so this process stands where the attached session would. */
-const startedByStartupCommand = { [MARK]: String(process.pid) };
-
-/** A user-level MCP registration and a project's MCP configuration, as files that nothing here may touch. */
-const USER_CONFIGURATION = `${JSON.stringify({ mcpServers: { "claude-session-pool": { command: "node", args: [join(repository, "src", "server.ts")] } } })}\n`;
-const PROJECT_CONFIGURATION = '{"mcpServers":{}}\n';
-
-/** The arguments of every run of the stand-in `claude` that logs to `log`, one run to a line. */
-function runsLogged(log: string): string[] {
-  return existsSync(log) ? readFileSync(log, "utf8").trimEnd().split("\n") : [];
+function added(
+  given: string[],
+  {
+    directory = "/Users/someone/git/codex-agents",
+    pluginDirectory = "/repo/plugin",
+    sessions = [],
+    nameState = "unknown",
+    plugins = [],
+    links = {},
+  }: Situation = {},
+) {
+  const notices: string[] = [];
+  const result = startupArguments(given, {
+    directory,
+    pluginDirectory,
+    sessions: { list: () => (typeof sessions === "string" ? Promise.reject(new Error(sessions)) : Promise.resolve(sessions)) },
+    nameState: () => nameState,
+    plugins: { installed: () => (typeof plugins === "string" ? Promise.reject(new Error(plugins)) : Promise.resolve(plugins)) },
+    realPath: (path) => links[path] ?? path,
+    notice: (line) => notices.push(line),
+  });
+  return { result, notices };
 }
 
-/** A directory of stand-ins for the programs the server runs, to put first on PATH. The stand-in `claude` logs its runs. */
-function standIns(sessions: unknown[], scripts: { osascript?: string } = {}) {
-  const directory = temporaryDirectory();
-  const listing = join(directory, "sessions.json");
-  const log = join(directory, "claude-runs.log");
-  writeFileSync(listing, JSON.stringify(sessions));
-  const bodies = { claude: `printf '%s\\n' "$*" >> '${log}'\ncat '${listing}'`, ps: "echo ttys001", osascript: "echo '101 1 1'", ...scripts };
-  for (const [name, body] of Object.entries(bodies)) {
-    writeFileSync(join(directory, name), `#!/bin/sh\n${body}\n`);
-    chmodSync(join(directory, name), 0o755);
-  }
-  return { directory, path: `${directory}:${dirname(process.execPath)}:/usr/bin:/bin`, claudeRuns: () => runsLogged(log) };
-}
-
-/** Starts the server as the plugin declares it. The declaration's `node` is the one that runs these tests. */
-async function withServer<T>(options: { cwd: string; env: Record<string, string> }, use: (client: Client) => Promise<T>): Promise<T> {
-  const client = new Client({ name: "test", version: "0" });
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: argumentsOf(manifest.mcpServers.pool!), stderr: "pipe", ...options }));
-  try {
-    return await use(client);
-  } finally {
-    await client.close();
-  }
-}
-
-async function callText(client: Client, name: string, args: Record<string, unknown>) {
-  const result = await client.callTool({ name, arguments: args });
-  return { isError: result.isError === true, text: (result.content as { text: string }[]).map((part) => part.text).join("\n") };
-}
-
-/** Runs the hook the plugin declares for `event`, as Claude Code does: with the event on standard input, as a child of the session. */
-function runHook(event: "SessionStart" | "PostCompact", input: Record<string, unknown>, home: string) {
-  const ran = spawnSync(process.execPath, argumentsOf(declaredHooks[event]![0]!.hooks[0]!), {
-    encoding: "utf8",
-    input: JSON.stringify({ hook_event_name: event, ...input }),
-    env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home },
-  });
-  return { status: ran.status, stdout: ran.stdout, stderr: ran.stderr };
-}
-
-describe("the plugin", () => {
-  it("is named cc-session-pool and declares the server pool, run by node, with its tools loaded up front and a 24-hour limit on one call", () => {
-    expect(manifest.name).toBe("cc-session-pool");
-    expect(Object.keys(manifest.mcpServers)).toEqual(["pool"]);
-    expect(manifest.mcpServers.pool).toMatchObject({ command: "node", alwaysLoad: true, timeout: 86_400_000 });
-  });
-
-  it("is listed in the repository's marketplace, which has the plugin's name, by a relative path that leads to its directory", () => {
-    const marketplace = readJson(join(repository, ".claude-plugin", "marketplace.json")) as { name: string; plugins: { name: string; source: string }[] };
-
-    expect(marketplace.name).toBe("cc-session-pool");
-    expect(marketplace.plugins.map(({ name, source }) => ({ name, source }))).toEqual([{ name: manifest.name, source: "./plugin" }]);
-    expect(realpathSync(join(repository, marketplace.plugins[0]!.source))).toBe(pluginDirectory);
-  });
-
-  it("declares its two hooks as node programs without a shell: one for every session start, one that wakes the session after a compaction started by /compact", () => {
-    expect(Object.keys(declaredHooks).sort()).toEqual(["PostCompact", "SessionStart"]);
-    const [sessionStart, ...moreOnSessionStart] = declaredHooks.SessionStart!;
-    const [postCompact, ...moreOnPostCompact] = declaredHooks.PostCompact!;
-
-    expect([moreOnSessionStart, moreOnPostCompact]).toEqual([[], []]);
-    expect(sessionStart!.matcher).toBeUndefined();
-    expect(sessionStart!.hooks).toEqual([{ type: "command", command: "node", args: [expect.any(String)] }]);
-    expect(postCompact!.matcher).toBe("manual");
-    expect(postCompact!.hooks).toEqual([{ type: "command", command: "node", args: [expect.any(String)], asyncRewake: true }]);
-  });
-
-  it("names one hooks module beside its hooks, the mod: a file in the plugin's directory that exports register and nothing else", async () => {
-    expect(hooksFile.modules).toEqual(["./register.ts"]);
-
-    const mod = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as Record<string, unknown>;
-
-    expect(Object.keys(mod)).toEqual(["register"]);
-    expect(typeof mod.register).toBe("function");
-  });
-
-  it("carries a mod that answers the call to compact_self under the name this plugin and its server give the tool", async () => {
-    type Hook = ($: unknown, e: unknown, next: () => Promise<unknown>) => Promise<unknown>;
-    const { register } = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as { register: (on: (event: string, hook: Hook) => void) => void };
-    const hooks = new Map<string, Hook>();
-    register((event, hook) => void hooks.set(event, hook));
-    const engine = { tool: { register: () => Promise.resolve({}) }, session: { id: () => Promise.resolve("s-1") } };
-    const fromServer = { result: "from the server" };
-    const [server] = Object.keys(manifest.mcpServers);
-    await hooks.get("session.start")!(engine, { isInteractive: true }, () => Promise.resolve({}));
-
-    const answered = await hooks.get("tool.call")!(engine, { tool: `mcp__plugin_${manifest.name}_${server}__compact_self` }, () => Promise.resolve(fromServer));
-
-    expect(answered).not.toBe(fromServer);
-    expect(answered).toEqual({ result: expect.stringMatching(/compacted when this turn ends/) as unknown });
-  });
-
-  it("carries a mod that answers the call to its own tool under the name Claude Code gives a tool this plugin registers", async () => {
-    type Hook = ($: unknown, e: unknown, next: () => Promise<unknown>) => Promise<unknown>;
-    const { register } = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as { register: (on: (event: string, hook: Hook) => void) => void };
-    const hooks = new Map<string, Hook>();
-    register((event, hook) => void hooks.set(event, hook));
-    const registered: { name: string }[] = [];
-    const engine = {
-      tool: { register: (spec: { name: string }) => (registered.push(spec), Promise.resolve({ tool: `mcp__${manifest.name}__${spec.name}` })) },
-      session: { usage: () => Promise.resolve({ startedAt: 0, context: { tokens: 37460, window: 1000000, percent: 4 }, rateLimits: [], cost: { usd: 0 } }) },
-    };
-    const fromServer = { result: "from the server" };
-    await hooks.get("session.start")!(engine, { isInteractive: false }, () => Promise.resolve({}));
-
-    const answered = await hooks.get("tool.call")!(engine, { tool: `mcp__${manifest.name}__${registered[0]!.name}` }, () => Promise.resolve(fromServer));
-
-    expect(answered).toEqual({ result: expect.stringMatching(/^Context: 37460 input tokens of a 1000000-token window \(4%\)\./) as unknown });
-  });
+const live = (name: string, overrides: Partial<SessionEntry> = {}): SessionEntry => ({
+  kind: "interactive",
+  cwd: "/Users/someone/elsewhere",
+  pid: 7321,
+  name,
+  sessionId: "78744021-cd3b-490e-b601-5575fbb91cd6",
+  status: "idle",
+  ...overrides,
 });
 
-describe("the server, as the plugin declares it", () => {
+describe("the arguments the start-up command adds", () => {
   it.each([
-    { how: "by the start-up command", mark: startedByStartupCommand, tools: [...POOL_TOOLS, "compact_self"].sort() },
-    { how: "by anything else", mark: {}, tools: ["compact_self"] },
-    { how: "from inside a session that the start-up command started", mark: { [MARK]: String(process.ppid) }, tools: ["compact_self"] },
-  ])("runs under node without a build step and offers a session started $how the tools $tools", async ({ mark, tools }) => {
-    const { path } = standIns([]);
-
-    const names = await withServer({ cwd: repository, env: { PATH: path, HOME: tmpdir(), ...mark } }, async (client) =>
-      (await client.listTools()).tools.map((tool) => tool.name).sort(),
-    );
-
-    expect(names).toEqual(tools);
+    { what: "no arguments", given: [] },
+    { what: "options and a prompt", given: ["--model", "opus", "plan the next ticket"] },
+    { what: "a session ID chosen for the new session", given: ["--session-id", SESSION] },
+  ])("names a new session after the directory when given $what", async ({ given }) => {
+    expect(await added(given).result).toEqual(["--name=codex-agents-dispatcher", ...PLUGIN]);
   });
 
   it.each([
-    { where: "the directory Claude Code names as the project directory", useProjectVariable: true },
-    { where: "its working directory when Claude Code names none", useProjectVariable: false },
-  ])("keeps the roster under the home directory, for $where", async ({ useProjectVariable }) => {
-    const home = temporaryDirectory();
-    const project = join(home, "project");
-    const elsewhere = join(home, "elsewhere");
-    for (const directory of [project, elsewhere]) mkdirSync(directory);
-    const { path } = standIns([{ kind: "interactive", pid: 1, cwd: project, name: "w1", sessionId: "s-1", status: "idle" }]);
-    const env: Record<string, string> = { PATH: path, HOME: home, ...startedByStartupCommand };
-    if (useProjectVariable) env.CLAUDE_PROJECT_DIR = project;
-
-    const adopted = await withServer({ cwd: useProjectVariable ? elsewhere : project, env }, (client) => callText(client, "adopt", { name: "w1" }));
-
-    expect(adopted).toEqual({ isError: false, text: 'Adopted "w1": idle, session s-1.' });
-    const pools = join(home, ".claude-session-pool", "pools");
-    const files = readdirSync(pools);
-    expect(files).toHaveLength(1);
-    expect(JSON.parse(readFileSync(join(pools, files[0]!), "utf8"))).toEqual({
-      version: 1,
-      directory: project,
-      slots: [{ name: "w1", origin: "adopted" }],
-    });
+    { given: ["--resume", SESSION] },
+    { given: ["-r", SESSION] },
+    { given: [`--resume=${SESSION}`] },
+    { given: ["--model", "opus", "--resume", SESSION.toUpperCase(), "carry on"] },
+  ])("names a session resumed by ID with $given when its transcript shows no name", async ({ given }) => {
+    expect(await added(given, { nameState: "unnamed" }).result).toEqual(["--name=codex-agents-dispatcher", ...PLUGIN]);
   });
 
-  it("leaves the MCP configuration of the user and of the project as it found it, and runs claude only to list the sessions", async () => {
-    const home = temporaryDirectory();
-    const project = join(home, "project");
-    mkdirSync(project);
-    writeFileSync(join(home, ".claude.json"), USER_CONFIGURATION);
-    writeFileSync(join(project, ".mcp.json"), PROJECT_CONFIGURATION);
-    const { path, claudeRuns } = standIns([{ kind: "interactive", pid: 1, cwd: project, name: "w1", sessionId: "s-1", status: "idle" }]);
+  it("adds no name to a session resumed by ID whose transcript shows one, whatever is running", async () => {
+    const { result, notices } = added(["--resume", SESSION], { nameState: "named", sessions: "claude agents exited with code 1" });
 
-    const adopted = await withServer({ cwd: project, env: { PATH: path, HOME: home, ...startedByStartupCommand } }, (client) => callText(client, "adopt", { name: "w1" }));
-
-    expect(adopted.isError).toBe(false);
-    expect(readFileSync(join(home, ".claude.json"), "utf8")).toBe(USER_CONFIGURATION);
-    expect(readFileSync(join(project, ".mcp.json"), "utf8")).toBe(PROJECT_CONFIGURATION);
-    expect(readdirSync(home).sort()).toEqual([".claude-session-pool", ".claude.json", "project"]);
-    expect(readdirSync(project)).toEqual([".mcp.json"]);
-    expect(new Set(claudeRuns())).toEqual(new Set(["agents --json"]));
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([]);
   });
 
-  it("takes the process that started it for the dispatcher session", async () => {
-    const home = temporaryDirectory();
-    const { path } = standIns([{ kind: "interactive", pid: process.pid, cwd: home, name: "boss", sessionId: "s-1", status: "idle" }]);
+  it("adds no name, and says so in one line, when the resumed session's transcript cannot be read", async () => {
+    const { result, notices } = added(["--resume", SESSION], { nameState: "unknown", sessions: "claude agents exited with code 1" });
 
-    const adopted = await withServer({ cwd: home, env: { PATH: path, HOME: home, ...startedByStartupCommand } }, (client) =>
-      callText(client, "adopt", { name: "boss" }),
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([`claude-dispatcher: the transcript of session ${SESSION} could not be found or read, so no name was added.`]);
+  });
+
+  // In every row the sessions cannot be listed and the resumed session has no name: had the command gone on to
+  // the default name, it would have been refused.
+  it.each([
+    { given: ["-n", "codex-agents-f9"] },
+    { given: ["--name", "codex-agents-f9", "--resume", SESSION] },
+    { given: ["--name=codex-agents-f9"] },
+    { given: ["--resume"] },
+    { given: ["-r"] },
+    { given: ["--resume", "--model", "opus"] },
+    { given: ["--resume", "codex-agents-f9"] },
+    { given: ["--resume=codex-agents-f9"] },
+    { given: ["-c"] },
+    { given: ["--continue"] },
+    { given: ["--resume", SESSION, "--fork-session"] },
+    { given: ["--from-pr", "123"] },
+    { given: ["--from-pr=123"] },
+    { given: ["--teleport", SESSION] },
+    { given: ["-p", "summarise the roster"] },
+    { given: ["--print", "summarise the roster"] },
+    { given: ["--bg", "work through the queue"] },
+    { given: ["--background", "--resume", SESSION] },
+    { given: ["--cloud", "plan the migration"] },
+    { given: ["--environment", "ccpool_1"] },
+    { given: ["--desktop", "--resume", SESSION] },
+    { given: ["-h"] },
+    { given: ["--help"] },
+    { given: ["-v"] },
+    { given: ["--version"] },
+  ])("adds no name and lists no sessions when given $given", async ({ given }) => {
+    const { result, notices } = added(given, { nameState: "unnamed", sessions: "claude agents exited with code 1" });
+
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([]);
+  });
+
+  it("refuses the default name when a live session in any directory already answers to it", async () => {
+    const { result } = added([], { sessions: [live("codex-agents-f9"), live("codex-agents-dispatcher", { pid: 18_703, cwd: "/Users/someone/other" })] });
+
+    await expect(result).rejects.toThrow(
+      'A live session already answers to "codex-agents-dispatcher" (pid 18703, in /Users/someone/other). Nothing was started. Pass -n <name> to start under another name.',
     );
+  });
 
-    expect(adopted).toEqual({ isError: true, text: '"boss" is the dispatcher session itself and cannot be a slot.' });
+  it("uses the default name when only a session that is not running has it", async () => {
+    const finished = live("codex-agents-dispatcher", { kind: "background", pid: undefined });
+
+    expect(await added([], { sessions: [finished, live("codex-agents-f9")] }).result).toEqual(["--name=codex-agents-dispatcher", ...PLUGIN]);
+  });
+
+  it("refuses the default name when the sessions cannot be listed", async () => {
+    const { result } = added(["--resume", SESSION], { nameState: "unnamed", sessions: "claude agents exited with code 1" });
+
+    await expect(result).rejects.toThrow(
+      'The sessions on this Mac could not be listed (claude agents exited with code 1), so it could not be checked whether a live session already answers to "codex-agents-dispatcher". Nothing was started. Pass -n <name> to choose the name yourself.',
+    );
+  });
+
+  it.each([
+    { what: "a line break", directory: "/Users/someone/pool\n--dangerously-skip-permissions" },
+    { what: "an escape character", directory: "/Users/someone/po\u001bol" },
+  ])("builds no name from a directory name that contains $what", async ({ directory }) => {
+    await expect(added([], { directory }).result).rejects.toThrow("contains a control character");
+    expect(await added(["-n", "pool"], { directory }).result).toEqual(PLUGIN);
+  });
+
+  it("builds no name in the directory /, which has none", async () => {
+    await expect(added([], { directory: "/" }).result).rejects.toThrow(
+      "The directory / has no name, so no session name was built from it. Nothing was started. Pass -n <name>.",
+    );
+    expect(await added(["-n", "pool"], { directory: "/" }).result).toEqual(PLUGIN);
+  });
+
+  it.each([
+    { what: "a line break", pluginDirectory: "/Users/someone/tools\n--dangerously-skip-permissions/plugin" },
+    { what: "an escape character", pluginDirectory: "/Users/someone/to\u001bols/plugin" },
+  ])("adds nothing when the path of the plugin's directory contains $what, whatever it was given", async ({ pluginDirectory }) => {
+    for (const given of [[], ["-n", "pool"], ["--help"]]) {
+      await expect(added(given, { pluginDirectory }).result).rejects.toThrow(/contains a control character, so it could not be passed to claude\. Nothing was started\.$/);
+    }
+  });
+
+  it("passes a plugin directory whose path holds spaces and quotes as one argument", async () => {
+    const pluginDirectory = "/Users/someone/my tools/it's \"here\"/plugin";
+
+    expect(await added(["-n", "pool"], { pluginDirectory }).result).toEqual(["--plugin-dir", pluginDirectory]);
+  });
+
+  it.each([
+    { directory: "/Users/someone/my pool", name: "my pool-dispatcher" },
+    { directory: "/Users/someone/-x", name: "-x-dispatcher" },
+  ])("builds the name $name in the directory $directory, as one argument", async ({ directory, name }) => {
+    expect(await added([], { directory }).result).toEqual([`--name=${name}`, ...PLUGIN]);
   });
 });
 
-describe("the hooks and the server, as the plugin declares them", () => {
-  /**
-   * A home directory with the transcript of the session s-1, which this process stands for and which is in the
-   * middle of a turn, and a stand-in for Terminal and Claude Code at once: what is typed is logged, and recorded in
-   * the transcript as queued.
-   */
-  function session() {
-    const home = temporaryDirectory();
-    const project = join(home, ".claude", "projects", "-Users-someone-project");
-    mkdirSync(project, { recursive: true });
-    const transcript = join(project, "s-1.jsonl");
-    writeFileSync(transcript, `${JSON.stringify({ type: "tools-used", tools: ["Read"], sessionId: "s-1" })}\n`);
-    const typed = join(home, "typed.log");
-    const queued = JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: "2026-11-11T06:41:11.708Z", sessionId: "s-1", content: "/compact" });
-    const osascript = [
-      "shift $(( $# - 3 ))",
-      `if [ "$3" = /compact ]; then echo "$1 $2 $3" >> '${typed}'; echo '${queued}' >> '${transcript}'; fi`,
-      "echo '101 1 1'",
-    ].join("\n");
-    const { path } = standIns([{ kind: "interactive", pid: process.pid, cwd: home, name: "me", sessionId: "s-1", status: "busy" }], { osascript });
-    const state = join(home, ".claude-session-pool");
-    const compactSelf = () => withServer({ cwd: home, env: { PATH: path, HOME: home } }, (client) => callText(client, "compact_self", {}));
-    return { home, typed, state, compactSelf };
-  }
-
-  it("the hook on a session start leaves the hook record under the home directory, named after the process that started it, and prints nothing", () => {
-    const home = temporaryDirectory();
-
-    const ran = runHook("SessionStart", { session_id: "s-1", source: "startup" }, home);
-
-    expect(ran).toEqual({ status: 0, stdout: "", stderr: "" });
-    const records = join(home, ".claude-session-pool", "hooks");
-    expect(readdirSync(records)).toEqual([`${process.pid}.json`]);
-    expect(readJson(join(records, `${process.pid}.json`))).toEqual({ version: 1, pid: process.pid, sessionId: "s-1" });
+describe("whether the start-up command loads the plugin itself", () => {
+  const installed = (overrides: Partial<InstalledPlugin> = {}): InstalledPlugin => ({
+    id: "cc-session-pool@cc-session-pool",
+    enabled: true,
+    readFromFolder: "/repo/plugin",
+    ...overrides,
   });
 
-  it("compact_self types into the tab of the session whose hooks ran and leaves a wake request; the hook after the compaction then hands over the sentence alone, exits with code 2, and does so once", async () => {
-    const { home, typed, state, compactSelf } = session();
-    runHook("SessionStart", { session_id: "s-1", source: "startup" }, home);
+  it.each([
+    { what: "a new session", given: [], expected: ["--name=codex-agents-dispatcher"] },
+    { what: "a session given a name", given: ["-n", "pool"], expected: [] },
+  ])("leaves the plugin to an installation that is enabled here and reads this repository's plugin, for $what", async ({ given, expected }) => {
+    const { result, notices } = added(given, { plugins: [installed()] });
 
-    const result = await compactSelf();
-
-    expect(result.isError).toBe(false);
-    expect(result.text).toContain("is queued");
-    expect(readFileSync(typed, "utf8")).toBe("101 1 /compact\n");
-    expect(readdirSync(join(state, "wake-requests"))).toEqual(["s-1.json"]);
-    expect(readJson(join(state, "wake-requests", "s-1.json"))).toEqual({
-      version: 1,
-      sessionId: "s-1",
-      requestedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/) as unknown,
-    });
-
-    const woken = runHook("PostCompact", { session_id: "s-1", trigger: "manual", compact_summary: "…" }, home);
-    const again = runHook("PostCompact", { session_id: "s-1", trigger: "manual", compact_summary: "…" }, home);
-
-    expect(woken).toEqual({ status: 2, stdout: "", stderr: `${SENTENCE}\n` });
-    expect(readdirSync(join(state, "wake-requests"))).toEqual([]);
-    expect(again).toEqual({ status: 0, stdout: "", stderr: "" });
+    expect(await result).toEqual(expected);
+    expect(notices).toEqual([]);
   });
 
-  it("compact_self refuses and types nothing in a session whose hooks did not run", async () => {
-    const { typed, state, compactSelf } = session();
+  it("takes an installation that reads this repository's plugin through a symbolic link as reading it", async () => {
+    const plugins = [installed({ readFromFolder: "/Users/someone/link-to-repo/plugin" })];
 
-    const result = await compactSelf();
+    expect(await added(["-n", "pool"], { plugins, links: { "/Users/someone/link-to-repo/plugin": "/repo/plugin" } }).result).toEqual([]);
+  });
 
-    expect(result.isError).toBe(true);
-    expect(result.text).toContain("No hook record shows that the cc-session-pool plugin's hooks run in this session");
-    expect(existsSync(typed)).toBe(false);
-    expect(existsSync(join(state, "wake-requests"))).toBe(false);
+  it.each([
+    { what: "the plugin is not installed", plugins: [installed({ id: "superpowers@superpowers-marketplace" })] },
+    { what: "the installation is not enabled in this directory", plugins: [installed({ enabled: false })] },
+    { what: "the installation reads another copy of the plugin", plugins: [installed({ readFromFolder: "/Users/someone/other-checkout/plugin" })] },
+    { what: "the installation reads no directory in place", plugins: [installed({ readFromFolder: undefined })] },
+  ])("loads the plugin for the session when $what", async ({ plugins }) => {
+    const { result, notices } = added(["-n", "pool"], { plugins });
+
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([]);
+  });
+
+  it.each([
+    { given: ["--restricted"] },
+    { given: ["--setting-sources", "project"] },
+    { given: ["--setting-sources=project,local"] },
+    { given: ["--settings", '{"enabledPlugins":{"cc-session-pool@cc-session-pool":false}}'] },
+    { given: ["--settings=/Users/someone/settings.json"] },
+  ])("loads the plugin for the session when it is given $given, with which the session may leave the installation out", async ({ given }) => {
+    const { result, notices } = added(["-n", "pool", ...given], { plugins: [installed()] });
+
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([]);
+  });
+
+  it.each([
+    { what: "the plugins cannot be listed", plugins: "claude plugin exited with code 1", reason: "claude plugin exited with code 1" },
+    { what: "the listing does not say whether the plugin is enabled", plugins: [installed({ enabled: "yes" })], reason: '`claude plugin list --json` printed "yes" for whether cc-session-pool@cc-session-pool is enabled' },
+  ])("loads the plugin for the session, and says why, when $what", async ({ plugins, reason }) => {
+    const { result, notices } = added(["-n", "pool"], { plugins });
+
+    expect(await result).toEqual(PLUGIN);
+    expect(notices).toEqual([
+      `claude-dispatcher: it could not be found out whether the cc-session-pool@cc-session-pool plugin is installed (${reason}), so it is loaded for this session with --plugin-dir.`,
+    ]);
   });
 });
 
 describe("the start-up command", () => {
-  const SESSION = "c97a8f9a-26a0-473f-8829-eeb79f7298e0";
   const plugin = ["--plugin-dir", pluginDirectory];
 
   /**

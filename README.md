@@ -212,9 +212,9 @@ pnpm verify    # typecheck, lint and tests
 
 Three test files run only with `CLAUDE_SESSION_POOL_LIVE=1` set:
 
-- `tests/plugin.live.test.ts` runs Claude Code's plugin validator on the plugin, and needs the `claude` program.
-- `tests/claude-session-pool.live.test.ts` starts two non-interactive Claude Code sessions that load the plugin from the clone, on the smallest model. One calls `context_usage`. The other is started with `--tools ""`, and the test checks that it has no `context_usage` and that Claude Code's debug log gives the reason. It needs the `claude` program and a login, and makes a few model requests.
-- `tests/terminal.live.test.ts` opens a real Terminal window, and needs Terminal running.
+- `tests/claude-session-pool-plugin.live.test.ts` runs Claude Code's plugin validator on the plugin, and needs the `claude` program.
+- `tests/claude-session-pool-context-usage.live.test.ts` starts two non-interactive Claude Code sessions that load the plugin from the clone, on the smallest model. One calls `context_usage`. The other is started with `--tools ""`, and the test checks that it has no `context_usage` and that Claude Code's debug log gives the reason. It needs the `claude` program and a login, and makes a few model requests.
+- `tests/claude-session-pool.live.test.ts` opens a real Terminal window, and needs Terminal running.
 
 ## Documentation
 
