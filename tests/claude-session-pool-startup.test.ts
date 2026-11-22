@@ -15,11 +15,11 @@ import type { NameState } from "../src/adapters/transcripts.ts";
 import type { InstalledPlugin, SessionEntry } from "../src/ports.ts";
 import { startupArguments } from "../src/startup.ts";
 import { MARK, PROJECT_CONFIGURATION, USER_CONFIGURATION, pluginDirectory, repository, runsLogged } from "./support/plugin-processes.ts";
+import { SESSION } from "./support/sessions.ts";
 import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/temporary.ts";
 
 afterEach(cleanUpTemporaryDirectories);
 
-const SESSION = "c97a8f9a-26a0-473f-8829-eeb79f7298e0";
 const PLUGIN = ["--plugin-dir", "/repo/plugin"];
 
 type Situation = {

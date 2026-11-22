@@ -19,8 +19,7 @@
  * typing: the server does not detect it, so there is nothing to assert. The dispatcher session ending while a
  * `compact` call waits: the wait dies with the server process. Driving either needs a real session and a real race.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileTranscripts } from "../src/adapters/transcripts.ts";
@@ -31,15 +30,13 @@ import { WakeState } from "../src/wake.ts";
 import { FakeMac } from "./support/fake-mac.ts";
 import { AFTER_CLEAR, modSetup, settle } from "./support/mod-engine.ts";
 import { OTHER_SESSION, SESSION } from "./support/sessions.ts";
-import { cleanUpTemporaryDirectories } from "./support/temporary.ts";
+import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/temporary.ts";
 
 const DISPATCHER_PID = 4242;
-const temporaryDirectories: string[] = [];
 const fakes: FakeMac[] = [];
 
 afterEach(() => {
   for (const fake of fakes.splice(0)) fake.stop();
-  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 afterEach(cleanUpTemporaryDirectories);
 
@@ -47,8 +44,7 @@ afterEach(cleanUpTemporaryDirectories);
 type Plugin = "absent" | "hooks only" | "hooks and mod";
 
 function setup(options: { plugin?: Plugin } = {}) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "claude-session-pool-")));
-  temporaryDirectories.push(home);
+  const home = temporaryDirectory();
   const directory = join(home, "project");
   const elsewhere = join(home, "elsewhere");
   const rosterRoot = join(home, "rosters");

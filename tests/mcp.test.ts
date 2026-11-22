@@ -4,8 +4,7 @@
  * reach the operation and that its outcome comes back; the rules themselves are covered in
  * `claude-session-pool.test.ts` and `claude-session-pool-compact-self.test.ts`.
  */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -17,20 +16,19 @@ import { Pool } from "../src/pool.ts";
 import { SelfCompaction } from "../src/self-compaction.ts";
 import { WakeState } from "../src/wake.ts";
 import { FakeMac } from "./support/fake-mac.ts";
+import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/temporary.ts";
 
-const temporaryDirectories: string[] = [];
 const fakes: FakeMac[] = [];
 afterEach(() => {
   for (const fake of fakes.splice(0)) fake.stop();
-  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
+afterEach(cleanUpTemporaryDirectories);
 
 const ATTACHED_PID = 4242;
 
 /** A server attached to a session in the middle of a turn: as a dispatcher session, with a pool, or as any other session. */
 async function connect({ dispatcher } = { dispatcher: true }) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "claude-session-pool-")));
-  temporaryDirectories.push(home);
+  const home = temporaryDirectory();
   const directory = join(home, "project");
   const transcriptRoot = join(home, "transcripts");
   for (const path of [directory, transcriptRoot]) mkdirSync(path);

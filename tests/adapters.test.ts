@@ -6,7 +6,7 @@
  * `claude-session-pool.live.test.ts`.
  */
 import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,16 +15,9 @@ import type { Run } from "../src/adapters/exec.ts";
 import { SystemProcesses } from "../src/adapters/processes.ts";
 import { TerminalApp, shellCommandFor } from "../src/adapters/terminal-app.ts";
 import { FileTranscripts } from "../src/adapters/transcripts.ts";
+import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/temporary.ts";
 
-const temporaryDirectories: string[] = [];
-afterEach(() => {
-  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
-});
-function temporaryDirectory(): string {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-session-pool-")));
-  temporaryDirectories.push(directory);
-  return directory;
-}
+afterEach(cleanUpTemporaryDirectories);
 
 const printing = (output: string): Run => () => Promise.resolve(output);
 const failing = (message: string): Run => () => Promise.reject(new Error(message));

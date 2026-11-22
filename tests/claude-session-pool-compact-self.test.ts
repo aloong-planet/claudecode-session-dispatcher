@@ -17,15 +17,14 @@
  * real session. A prompt that comes up between the reading of the session's state and the typing of `/compact`
  * cannot be driven: the server does not detect it. Neither can a call made by a subagent of the session, which the
  * server cannot tell from the session's own, or hooks that are switched off after the hook record was written.
- * Nor is that Claude Code runs the hook on `PostCompact` for a compaction the mod asked for, and wakes an idle session
- * when the hook exits with code 2; both were measured by hand on Claude Code 2.1.322 and are to be measured again when
- * Claude Code changes how it runs hooks. Nor is that Claude Code loads the mod from the plugin's hooks file, tells it of
+ * Nor is that Claude Code runs the hook for these events with this input, and that it wakes an idle session when the
+ * hook exits with code 2; both were measured by hand on Claude Code 2.1.322 and are to be measured again when Claude
+ * Code changes how it runs hooks. Nor is that Claude Code loads the mod from the plugin's hooks file, tells it of
  * these events with these inputs, lets its answer stand in for the server's tool, and starts a turn when it submits a
  * prompt (measured by hand on Claude Code 2.1.322); that is to be measured again when Claude Code changes its interface
  * for mods.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileTranscripts } from "../src/adapters/transcripts.ts";
@@ -41,12 +40,10 @@ import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/tempo
 
 afterEach(cleanUpTemporaryDirectories);
 
-const temporaryDirectories: string[] = [];
 const fakes: FakeMac[] = [];
 
 afterEach(() => {
   for (const fake of fakes.splice(0)) fake.stop();
-  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 const QUEUED =
@@ -66,8 +63,7 @@ type Options = {
 
 /** A session in the middle of a turn, in its own Terminal window, with a transcript, next to a session it must not touch. */
 function setup(options: Options = {}) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "claude-session-pool-")));
-  temporaryDirectories.push(home);
+  const home = temporaryDirectory();
   const directory = join(home, "project");
   const transcriptRoot = join(home, "transcripts");
   const stateRoot = join(home, "state");
