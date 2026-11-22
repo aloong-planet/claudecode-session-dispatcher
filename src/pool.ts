@@ -3,6 +3,7 @@ import type { Clock, Processes, SessionEntry, SessionLister, TabRef, Terminal, T
 import { type Outcome, attempt, describeSession, messageOf } from "./report.ts";
 import { RosterStore, type Slot } from "./roster.ts";
 import { Refusal, checkModel, checkPermissionMode, checkSlotName, checkTimeoutMinutes } from "./validate.ts";
+import type { WakeState } from "./wake.ts";
 
 export type PoolDeps = {
   /** The pool directory: where the dispatcher session was started. */
@@ -16,6 +17,8 @@ export type PoolDeps = {
   processes: Processes;
   transcripts: Transcripts;
   clock: Clock;
+  /** Where the hook records show in which sessions the plugin's hooks run, and where clear orders are left. */
+  wake: WakeState;
 };
 
 export const LIMITS = {
@@ -207,8 +210,41 @@ export class Pool {
   }
 
   private async clearSlot(name: string): Promise<string> {
-    const before = await this.typeInto(name, "/clear");
+    const before = await this.awaitIdle(name, "nothing was typed or written");
+    // A hook record for the session's present session ID shows that the plugin's hooks run in it. The plugin loads its mod
+    // with its hooks, but nothing shows that the mod runs: an order that nothing acts on is reported as not confirmed.
+    if (before.sessionId !== undefined && this.deps.wake.hookRecord(before.pid) === before.sessionId) {
+      return this.clearByOrder(name, before, before.sessionId);
+    }
+    await this.typeIntoIdle(name, before, "/clear");
     const typed = `"/clear" was typed into the slot "${name}"`;
+    const replacedBy = await this.confirmClear(name, before, typed, () => "The command was not typed again.");
+    return `${replacedBy} Delivered by typing "/clear", because no hook record shows that the plugin's hooks run in this session.`;
+  }
+
+  /** Leaves a clear order for the mod in the idle session `before`, and waits for the session ID to change. */
+  private async clearByOrder(name: string, before: LiveSession, sessionId: string): Promise<string> {
+    await this.exclusive(() => this.deps.wake.writeClearOrder(sessionId, this.deps.clock.now()));
+    let removal: string | undefined;
+    const removeOrder = () =>
+      (removal ??= ((): string => {
+        try {
+          this.deps.wake.removeClearOrder(sessionId);
+          return "The order was removed.";
+        } catch (error) {
+          return `The order could not be removed (${messageOf(error)}); it applies to no session 60 seconds after it was written.`;
+        }
+      })());
+    try {
+      const replacedBy = await this.confirmClear(name, before, `A clear order was written for the slot "${name}"`, () => `${removeOrder()} Nothing was typed.`);
+      return `${replacedBy} Delivered as a clear order; nothing was typed.`;
+    } finally {
+      removeOrder();
+    }
+  }
+
+  /** Polls until the session ID of the slot `before` has changed, or says why that is not confirmed. */
+  private async confirmClear(name: string, before: LiveSession, delivered: string, afterwards: () => string): Promise<string> {
     const deadline = this.deps.clock.now() + LIMITS.clearConfirmMs;
     for (;;) {
       await this.deps.clock.sleep(LIMITS.pollMs);
@@ -217,14 +253,12 @@ export class Pool {
         return `Cleared "${name}": session ${before.sessionId} was replaced by session ${seen.session.sessionId}.`;
       }
       if (this.sessionReplaced(seen, before)) {
-        throw new Refusal(`${typed}, and the slot is now ${this.describeReplaced(seen, before)}: not confirmed.`);
+        throw new Refusal(`${delivered}, and the slot is now ${this.describeReplaced(seen, before)}: not confirmed.`);
       }
       if (this.deps.clock.now() >= deadline) {
         const observed =
           seen.state === "unknown" ? `the sessions could not be listed (${seen.error})` : `its session ID was still ${before.sessionId}`;
-        throw new Refusal(
-          `${typed}, but ${observed} after ${LIMITS.clearConfirmMs / 1000} seconds: not confirmed. The command was not typed again.`,
-        );
+        throw new Refusal(`${delivered}, but ${observed} after ${LIMITS.clearConfirmMs / 1000} seconds: not confirmed. ${afterwards()}`);
       }
     }
   }
@@ -333,34 +367,39 @@ export class Pool {
 
   /** Types a command into an idle slot's Terminal tab and returns the session as it was just before. */
   private async typeInto(name: string, command: string, beforeTyping?: (session: LiveSession) => void): Promise<LiveSession> {
+    const session = await this.awaitIdle(name, "nothing was typed");
+    await this.typeIntoIdle(name, session, command, beforeTyping);
+    return session;
+  }
+
+  /** Waits up to 60 seconds for the slot's session to be idle, and returns it; `nothing` says what was not done when that fails. */
+  private async awaitIdle(name: string, nothing: string): Promise<LiveSession> {
     checkSlotName(name);
     this.requireSlot(name);
     const deadline = this.deps.clock.now() + LIMITS.idleBeforeTypingMs;
-    let session: LiveSession;
     for (;;) {
       const resolved = await this.resolve(name);
       if (resolved.state !== "live") {
-        throw new Refusal(`The slot "${name}" is ${this.describeResolved(resolved)}; nothing was typed.`);
+        throw new Refusal(`The slot "${name}" is ${this.describeResolved(resolved)}; ${nothing}.`);
       }
-      this.refuseDispatcher(resolved.session, name, "nothing was typed");
-      if (resolved.session.status === "idle") {
-        session = resolved.session;
-        break;
-      }
+      this.refuseDispatcher(resolved.session, name, nothing);
+      if (resolved.session.status === "idle") return resolved.session;
       if (this.deps.clock.now() >= deadline) {
         throw new Refusal(
-          `The slot "${name}" is ${describeSession(resolved.session)} and did not become idle within ${LIMITS.idleBeforeTypingMs / 1000} seconds; nothing was typed.`,
+          `The slot "${name}" is ${describeSession(resolved.session)} and did not become idle within ${LIMITS.idleBeforeTypingMs / 1000} seconds; ${nothing}.`,
         );
       }
       await this.deps.clock.sleep(LIMITS.pollMs);
     }
+  }
+
+  private async typeIntoIdle(name: string, session: LiveSession, command: string, beforeTyping?: (session: LiveSession) => void): Promise<void> {
     const tab = await this.findTab(session.pid);
     if (!tab) {
       throw new Refusal(`No Terminal tab hosts the slot "${name}" (pid ${session.pid}); nothing was typed.`);
     }
     beforeTyping?.(session);
     await this.exclusive(() => this.deps.terminal.typeCommand(tab, command));
-    return session;
   }
 
   private refuseDispatcher(session: LiveSession, name: string, consequence: string): void {

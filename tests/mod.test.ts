@@ -6,9 +6,11 @@
  *
  * Not covered here, because it needs a real Claude Code session: that Claude Code loads the mod from the plugin's
  * hooks file, tells it of these events with these inputs, lets its answer stand in for the server's tool, and starts
- * a turn when it submits a prompt. All of that was measured by hand on Claude Code 2.1.322 and is to be measured
- * again when Claude Code changes its interface for mods. That Claude Code lists the mod's own tool and gives it the
- * figures of the calling request is checked live in `claude-session-pool.live.test.ts`.
+ * a turn when it submits a prompt (measured by hand on Claude Code 2.1.322); that it watches the paths a `SessionStart`
+ * hook names, tells the mod of a file changed under them, and runs `/clear` once the session is idle (measured by hand
+ * on Claude Code 2.1.327, with the screen unlocked). Both are to be measured again when Claude Code changes its
+ * interface for mods. That Claude Code lists the mod's own tool and gives it the figures of the calling request is
+ * checked live in `claude-session-pool.live.test.ts`.
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +32,11 @@ const CANCELED = "cc-session-pool: $.session.compact: Compaction canceled.";
 const REGISTRATION_REFUSED = 'cc-session-pool: $.tool.register: "context_usage" refused: this session has no built-in tools (--tools ""), so it takes none from plugins';
 const SESSION = "c97a8f9a-26a0-473f-8829-eeb79f7298e0";
 const OTHER_SESSION = "78744021-cd3b-490e-b601-5575fbb91cd6";
+/** The session ID that a `/clear` in the session gives it. */
+const AFTER_CLEAR = "5b1f9a3e-7a49-4c0e-92a7-0f6f4f7c1a11";
+/** What Claude Code 2.1.327 rejects a mod's `$.command.run` with when it is called while a `classic.FileChanged` event is dispatched. */
+const FROM_FILE_CHANGED =
+  "cc-session-pool: $.command.run: called from a classic.FileChanged hook, it would wait on the turn this hook is holding; run it from a later event (turn.complete) (host check)";
 /** What the server's tool would have returned, had the call reached it. */
 const FROM_SERVER = { result: "from the server" };
 /** The mod's own tool, under the name a session sees it by. */
@@ -55,9 +62,10 @@ const settle = async () => {
 
 /**
  * A session with the mod registered in it, and the events Claude Code tells a mod of. `told` is whether the mod was told
- * that the session started; `registerFails`, whether Claude Code refuses the mod's tool.
+ * that the session started; `registerFails`, whether Claude Code refuses the mod's tool; `homeKnown`, whether the
+ * mod can learn the user's home directory.
  */
-async function setup({ interactive = true, told = true, registerFails = false } = {}) {
+async function setup({ interactive = true, told = true, registerFails = false, homeKnown = true } = {}) {
   const hooks = new Map<string, Hook>();
   register((event: string, hook: unknown) => void hooks.set(event, hook as Hook));
   /** `idFails`: Claude Code does not give the mod the session's ID. */
@@ -75,10 +83,19 @@ async function setup({ interactive = true, told = true, registerFails = false } 
   const usage = { answer: (): Promise<unknown> => Promise.resolve(MEASURED) };
   /** The lines the mod logged, with where it sent each. */
   const logs: { text: string; options?: unknown }[] = [];
+  /** The time Claude Code tells the mod, in milliseconds since the epoch. */
+  const time = { now: Date.UTC(2026, 10, 22, 3, 0, 0) };
+  /** The slash commands the mod asked Claude Code to run. `fails`: Claude Code rejects them. `held`: they are queued and have not run. */
+  const commands: string[] = [];
+  const clears = { fails: false, held: false, release: () => {} };
+  /** Whether a `classic.FileChanged` event is being dispatched: Claude Code rejects `$.command.run` while it is. */
+  const dispatching = { fileChanged: false };
+  /** The paths the mod read. */
+  const reads: string[] = [];
   const engine = {
     ui: { log: (text: string, options?: unknown) => void logs.push({ text, options }) },
-    env: { get: (name: string) => Promise.resolve(name === "HOME" ? home : undefined) },
-    fs: { read: (path: string) => Promise.resolve().then(() => readFileSync(path, "utf8")) },
+    env: { get: (name: string) => Promise.resolve(name === "HOME" && homeKnown ? home : undefined) },
+    fs: { read: (path: string) => Promise.resolve().then(() => (reads.push(path), readFileSync(path, "utf8"))) },
     tool: {
       register: (spec: { name: string }) =>
         registerFails
@@ -97,15 +114,62 @@ async function setup({ interactive = true, told = true, registerFails = false } 
         }),
     },
     prompt: { submit: ({ text }: { text: string }) => (prompts.push(text), Promise.resolve({ text })) },
-    clock: { after: (ms: number, run: () => void) => void timers.push({ ms, run }) },
+    clock: { now: () => Promise.resolve(time.now), after: (ms: number, run: () => void) => void timers.push({ ms, run }) },
+    command: {
+      run: ({ command }: { command: string }) => {
+        commands.push(command);
+        if (clears.fails) return Promise.reject(new Error("cc-session-pool: $.command.run: the session is stopping"));
+        if (dispatching.fileChanged) return Promise.reject(new Error(FROM_FILE_CHANGED));
+        const ran = () => {
+          // A /clear gives the session a new session ID.
+          if (command === "clear") session.id = AFTER_CLEAR;
+          return { text: "" };
+        };
+        return clears.held ? new Promise((resolve) => (clears.release = () => resolve(ran()))) : Promise.resolve(ran());
+      },
+    },
   };
-  const tell = (event: string, input: unknown, fromCore: unknown = {}) => hooks.get(event)!(engine, input, () => Promise.resolve(fromCore));
+  const tell = (event: string, input: unknown, fromCore: unknown = {}, below?: Promise<unknown>) =>
+    hooks.get(event)!(engine, input, () => (below === undefined ? Promise.resolve(fromCore) : below.then(() => fromCore)));
   if (told) await tell("session.start", { cwd: "/somewhere", surface: interactive ? "terminal" : null, isInteractive: interactive });
 
   return {
     session,
     home,
     wake,
+    time,
+    commands,
+    clears,
+    reads,
+    /** Claude Code tells the mod that a session started, by way of the classic `SessionStart` hook; resolves to what the mod answers. */
+    classicStart: (source: string, fromCore?: unknown) => tell("classic.SessionStart", { hook_event_name: "SessionStart", source }, fromCore),
+    /**
+     * Claude Code tells the mod that a file under a path it asked to watch was added, changed or removed. The event is
+     * dispatched until the hook has returned and a moment after; `holdBelow` makes a hook under the mod's keep it so until
+     * the returned `release` is called. Then whatever the mod set a timer of no delay for runs. `fromCore` is what the
+     * hooks under the mod's answer; `answered` is what the mod answers (once `end` has run, when the event is held).
+     */
+    fileChanged: async (
+      file = `${home}/.claude-session-pool/clear-orders/${SESSION}.json`,
+      event = "add",
+      { holdBelow = false, fromCore = {} }: { holdBelow?: boolean; fromCore?: unknown } = {},
+    ) => {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      dispatching.fileChanged = true;
+      const dispatch = tell("classic.FileChanged", { hook_event_name: "FileChanged", file_path: file, event }, fromCore, holdBelow ? gate : undefined);
+      await settle();
+      if (holdBelow) await runTimers(0);
+      const end = async () => {
+        release();
+        const answered = await dispatch;
+        await settle();
+        dispatching.fileChanged = false;
+        await runTimers(0);
+        return answered;
+      };
+      return { end, answered: holdBelow ? undefined : await end() };
+    },
     compactions,
     prompts,
     timers,
@@ -545,3 +609,225 @@ describe("the tool context_usage", () => {
     expect(answered.deny).not.toMatch(/\d/);
   });
 });
+
+describe("the directory of the clear orders", () => {
+  const ORDERS = (home: string) => `${home}/.claude-session-pool/clear-orders`;
+
+  it.each(["startup", "clear", "resume", "compact"])("is watched from every session start, on top of the paths others ask for: a start from %s", async (source) => {
+    const { home, classicStart } = await setup();
+
+    const answered = await classicStart(source, { watchPaths: ["/elsewhere"], additionalContext: ["kept"] });
+
+    expect(answered).toEqual({ watchPaths: ["/elsewhere", ORDERS(home)], additionalContext: ["kept"] });
+  });
+
+  it("is the only path the mod asks to be watched when no other hook names one", async () => {
+    const { home, classicStart } = await setup();
+
+    expect(await classicStart("startup", undefined)).toEqual({ watchPaths: [ORDERS(home)] });
+  });
+
+  it("is not watched, and the result of the other hooks stands, when the mod cannot learn the user's home directory", async () => {
+    const { classicStart } = await setup({ homeKnown: false });
+
+    expect(await classicStart("startup", { watchPaths: ["/elsewhere"] })).toEqual({ watchPaths: ["/elsewhere"] });
+  });
+});
+
+describe("a clear order that the server left for the session", () => {
+  /** An order file as the server writes it, left `agoMs` before the time the mod has. */
+  const leave = ({ wake, time }: { wake: WakeState; time: { now: number } }, agoMs = 1000) => wake.writeClearOrder(SESSION, time.now - agoMs);
+
+  it("makes the mod run /clear once, when Claude Code tells it of a change under the directory of the orders", async () => {
+    const context = await setup();
+    leave(context);
+
+    await context.fileChanged();
+
+    expect(context.commands).toEqual(["clear"]);
+    expect(context.session.id).toBe(AFTER_CLEAR);
+  });
+
+  it("is passed on to the hooks under the mod's own, which keep their answer", async () => {
+    const context = await setup();
+    leave(context);
+
+    const { answered } = await context.fileChanged(undefined, undefined, { fromCore: { answeredBy: "a hook under the mod's" } });
+
+    expect(answered).toEqual({ answeredBy: "a hook under the mod's" });
+    expect(context.commands).toEqual(["clear"]);
+  });
+
+  it.each(["answer", "aborted", "error", "refusal"])(
+    "makes the mod wait until the turn that is running has ended, however it ended: %s",
+    async (reason) => {
+      const context = await setup();
+      await context.turnStarts();
+      leave(context);
+
+      await context.fileChanged();
+      expect(context.commands).toEqual([]);
+      await context.turnEnds(reason);
+
+      expect(context.commands).toEqual(["clear"]);
+      expect(context.session.id).toBe(AFTER_CLEAR);
+    },
+  );
+
+  it("does not make the mod run /clear when the order was removed while the turn was running", async () => {
+    const context = await setup();
+    await context.turnStarts();
+    leave(context);
+    await context.fileChanged();
+
+    context.wake.removeClearOrder(SESSION);
+    await context.turnEnds();
+
+    expect(context.commands).toEqual([]);
+  });
+
+  it.each([
+    { what: "the file is named for another session and so is its content", prepare: (c: Context) => c.wake.writeClearOrder(OTHER_SESSION, c.time.now) },
+    {
+      what: "the file is named for this session and its content names another",
+      prepare: (c: Context) => put(c, JSON.stringify({ version: 1, sessionId: OTHER_SESSION, requestedAt: new Date(c.time.now).toISOString() })),
+    },
+    { what: "it was written 60 seconds ago", prepare: (c: Context) => c.wake.writeClearOrder(SESSION, c.time.now - 60_000) },
+    { what: "it is dated in the future", prepare: (c: Context) => c.wake.writeClearOrder(SESSION, c.time.now + 1) },
+    { what: "it is not valid JSON", prepare: (c: Context) => put(c, '{"version": 1, "sessionId"') },
+    {
+      what: "it carries another version",
+      prepare: (c: Context) => put(c, JSON.stringify({ version: 2, sessionId: SESSION, requestedAt: new Date(c.time.now).toISOString() })),
+    },
+    { what: "its time is not a date", prepare: (c: Context) => put(c, JSON.stringify({ version: 1, sessionId: SESSION, requestedAt: "yesterday" })) },
+    {
+      what: "its time is a list that holds a date",
+      prepare: (c: Context) => put(c, JSON.stringify({ version: 1, sessionId: SESSION, requestedAt: [new Date(c.time.now).toISOString()] })),
+    },
+    { what: "it is a list", prepare: (c: Context) => put(c, "[]") },
+  ])("does not make the mod run /clear when $what", async ({ prepare }) => {
+    const context = await setup();
+    prepare(context);
+
+    await context.fileChanged();
+    await context.turnEnds();
+
+    expect(context.commands).toEqual([]);
+  });
+
+  it("makes the mod run /clear when the order was written just under 60 seconds ago", async () => {
+    const context = await setup();
+    leave(context, 59_999);
+
+    await context.fileChanged();
+
+    expect(context.commands).toEqual(["clear"]);
+  });
+
+  it("makes the mod run /clear once when Claude Code tells it of several changes while the command is queued", async () => {
+    const context = await setup();
+    context.clears.held = true;
+    leave(context);
+
+    await Promise.all([context.fileChanged(), context.fileChanged(), context.fileChanged()]);
+    await context.turnEnds();
+    context.clears.release();
+    await settle();
+
+    expect(context.commands).toEqual(["clear"]);
+  });
+
+  it("does not apply to the session after the clear: no second /clear for the same order", async () => {
+    const context = await setup();
+    leave(context);
+
+    await context.fileChanged();
+    await context.fileChanged();
+    await context.turnEnds();
+
+    expect(context.commands).toEqual(["clear"]);
+  });
+
+  it("is not read from a path built of a session ID that could name a file elsewhere", async () => {
+    const context = await setup();
+    context.session.id = "../escaped";
+
+    await context.fileChanged();
+    await context.turnEnds();
+
+    expect(context.reads).toEqual([]);
+    expect(context.commands).toEqual([]);
+  });
+
+  it("is passed over when Claude Code does not give the mod the session's ID", async () => {
+    const context = await setup();
+    leave(context);
+    context.session.idFails = true;
+
+    await context.fileChanged();
+
+    expect(context.commands).toEqual([]);
+  });
+
+  it("is tried again every 2 seconds when Claude Code rejects the command, and given up after five more tries", async () => {
+    const context = await setup();
+    context.clears.fails = true;
+    leave(context);
+
+    await context.fileChanged();
+    for (let again = 0; again < 5; again += 1) {
+      expect(context.timers.map((timer) => timer.ms)).toEqual([2000]);
+      await context.runTimers(2000);
+    }
+
+    expect(context.commands).toEqual(Array<string>(6).fill("clear"));
+    expect(context.timers).toEqual([]);
+  });
+
+  it("makes the mod run /clear on a later try when the rejection was for a moment only", async () => {
+    const context = await setup();
+    context.clears.fails = true;
+    leave(context);
+    await context.fileChanged();
+
+    context.clears.fails = false;
+    await context.runTimers(2000);
+
+    expect(context.commands).toEqual(["clear", "clear"]);
+    expect(context.session.id).toBe(AFTER_CLEAR);
+  });
+
+  it("makes the mod run /clear on a later try when a hook under its own holds the event that told it", async () => {
+    const context = await setup();
+    leave(context);
+
+    const held = await context.fileChanged(undefined, undefined, { holdBelow: true });
+    expect(context.commands).toEqual(["clear"]);
+    expect(context.session.id).toBe(SESSION);
+    await held.end();
+    await context.runTimers(2000);
+
+    expect(context.commands).toEqual(["clear", "clear"]);
+    expect(context.session.id).toBe(AFTER_CLEAR);
+  });
+
+  it("does not try again when the order was removed after Claude Code rejected the command", async () => {
+    const context = await setup();
+    context.clears.fails = true;
+    leave(context);
+    await context.fileChanged();
+
+    context.wake.removeClearOrder(SESSION);
+    await context.runTimers(2000);
+
+    expect(context.commands).toEqual(["clear"]);
+  });
+});
+
+type Context = Awaited<ReturnType<typeof setup>>;
+
+/** Writes `text` as the order file of the session, as a process of the same user could. */
+function put(context: Context, text: string): void {
+  mkdirSync(join(context.home, ".claude-session-pool", "clear-orders"), { recursive: true });
+  writeFileSync(join(context.home, ".claude-session-pool", "clear-orders", `${SESSION}.json`), text);
+}

@@ -6,12 +6,12 @@
 - **Every session in which the plugin's mod runs gets the tool `context_usage`.** A session uses it to learn the size of its own context, as Claude Code's status line has it. Where Claude Code refuses the mod's tool, as it does in a session started with `--tools ""`, the session goes without it, and the reason is in Claude Code's debug log (`claude --debug`).
 - **A dispatcher session gets nine more tools.** With them it manages a pool of worker sessions that run in Terminal windows. It can open them, reset or compact their conversations, read their state, and close or replace them.
 
-What the plugin does, in full, is in the spec, [docs/specs/claude-session-pool.md](docs/specs/claude-session-pool.md).
+What the plugin does, in full, is in the specs, listed in [docs/specs/README.md](docs/specs/README.md).
 
 ## Requirements
 
-- **macOS with the Terminal app.** Worker sessions run in Terminal windows. When a session's call to `compact_self` is handled by the plugin's server rather than its mod (see [Tools](#tools)), it also needs the session to run in a Terminal window. The plugin opens and types into Terminal windows through Terminal's scripting interface; when macOS refuses that automation request, the tool returns the error.
-- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325.
+- **macOS with the Terminal app.** Worker sessions run in Terminal windows. When a session's call to `compact_self` is handled by the plugin's server rather than its mod, or the dispatcher session's `clear` is typed instead of left as an order (see [Tools](#tools)), the session must run in a Terminal window too. The plugin opens and types into Terminal windows through Terminal's scripting interface; when macOS refuses that automation request, the tool returns the error.
+- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325. `clear` through the mod was measured on 2.1.327 only, with the screen unlocked; it has not been measured on earlier versions or on a locked screen.
 - **Node.js 22.18 or later**, found on the `PATH` of the sessions that load the plugin. The server and the hooks run on it directly, with no build step.
 - **pnpm**, to install the packages the server needs.
 
@@ -71,7 +71,8 @@ A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`, except `
 | `init`, `open` | the dispatcher session | Open worker sessions in new Terminal windows, in the pool's directory, and add them to the roster. |
 | `adopt` | the dispatcher session | Adds a session you opened by hand to the roster. |
 | `status` | the dispatcher session | Lists each slot's state: `idle`, `busy`, `waiting` (and for what), `gone` or `ambiguous`. |
-| `clear`, `compact` | the dispatcher session | Type `/clear` or `/compact` into a worker session's Terminal tab and confirm that it took effect. |
+| `clear` | the dispatcher session | Resets a worker session's conversation and confirms that its session ID changed. Where the plugin's hooks run in the worker session, the plugin's mod runs `/clear` there; otherwise the server types it into the session's Terminal tab. |
+| `compact` | the dispatcher session | Types `/compact` into a worker session's Terminal tab and confirms that it took effect. |
 | `close`, `recycle` | the dispatcher session | End a worker session, or end it and open a new one under the same name. |
 | `release` | the dispatcher session | Takes a slot off the roster and leaves its session alone. |
 
@@ -79,6 +80,13 @@ A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`, except `
 
 - **With the mod.** In an interactive session in which the plugin's mod runs, the mod answers the call. Nothing is typed, and the session need not run in Terminal.
 - **With the server.** Everywhere else the call reaches the plugin's server. The server types `/compact` into the session's Terminal tab, and the plugin's `PostCompact` hook wakes the session.
+
+`clear` also works one of two ways:
+
+- **With the mod.** When a hook record shows that the plugin's hooks run in the worker session, the server leaves a clear order for the session's session ID, a file under `~/.claude-session-pool/clear-orders/`, and types nothing. The plugin's mod in that session has Claude Code watch that directory and runs `/clear` once no turn is running. The result says that the command was delivered as a clear order. If the session ID has not changed 30 seconds after the order was written, `clear` reports that the order was written and not confirmed, removes it, and does not type the command instead. A mod that Claude Code loads again, as it does when a file under a `--plugin-dir` directory is saved, is told of no more changes until the session starts again, so `clear` reports the same for that session.
+- **By typing.** With no such hook record, the server types `/clear` into the session's Terminal tab, as `compact` does, and the result says so.
+
+Only `clear` has the first way. `compact`, `init`, `open`, `adopt`, `close` and `recycle` still use Terminal's scripting interface.
 
 ## Running the dispatcher
 
@@ -210,6 +218,6 @@ Three test files run only with `CLAUDE_SESSION_POOL_LIVE=1` set:
 
 ## Documentation
 
-- [docs/specs/claude-session-pool.md](docs/specs/claude-session-pool.md): the behaviour, its boundaries and the facts about Claude Code it rests on.
+- [docs/specs/](docs/specs/README.md): the behaviour of each feature, its boundaries and the facts about Claude Code it rests on.
 - [docs/adr/](docs/adr/): the decisions and the options they rejected.
 - [docs/CONTEXT.md](docs/CONTEXT.md): the terms used throughout.

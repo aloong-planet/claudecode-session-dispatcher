@@ -4,21 +4,29 @@
  * Claude Code's session listing, the Terminal application and process signals are replaced by `FakeMac`; rosters
  * and transcripts are real files in a temporary directory; time is the fake's virtual clock.
  *
+ * The plugin's hooks and mod are stood in for by the fake: it runs the real hook program, which writes the hook records,
+ * and it models what Claude Code and the mod do about a clear order (see `modWatches` in `support/fake-mac.ts`). The real
+ * mod is covered by `mod.test.ts`, which hands it a fake engine.
+ *
  * Not covered here, because it needs the real programs: what `/clear` and `/compact` do inside Claude Code, that
- * Ctrl+C empties its input box, and that Terminal puts the earlier window back in front. The Terminal part is
- * covered by `terminal.live.test.ts` when it is enabled; the Claude Code part is checked by hand with real sessions.
+ * Ctrl+C empties its input box, that Terminal puts the earlier window back in front, and that Claude Code's file watch
+ * tells the mod of a clear order, which the mod then runs. The Terminal part is covered by `terminal.live.test.ts` when it
+ * is enabled; the Claude Code part was checked by hand with real sessions on Claude Code 2.1.327. Nothing checked a
+ * `clear` while the screen is locked.
  *
  * Two boundaries of the spec cannot be driven at all. A message that reaches a slot between the idle check and the
  * typing: the server does not detect it, so there is nothing to assert. The dispatcher session ending while a
  * `compact` call waits: the wait dies with the server process. Driving either needs a real session and a real race.
  */
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileTranscripts } from "../src/adapters/transcripts.ts";
+import { runHook } from "../src/hooks.ts";
 import { Pool } from "../src/pool.ts";
 import { RosterStore } from "../src/roster.ts";
+import { WakeState } from "../src/wake.ts";
 import { FakeMac } from "./support/fake-mac.ts";
 
 const DISPATCHER_PID = 4242;
@@ -30,17 +38,29 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-function setup() {
+/** What of the plugin runs in the worker sessions: nothing, its hooks alone, or its hooks and its mod. */
+type Plugin = "absent" | "hooks only" | "hooks and mod";
+
+function setup(options: { plugin?: Plugin } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "claude-session-pool-")));
   temporaryDirectories.push(home);
   const directory = join(home, "project");
   const elsewhere = join(home, "elsewhere");
   const rosterRoot = join(home, "rosters");
   const transcriptRoot = join(home, "transcripts");
+  const stateRoot = join(home, "state");
   for (const path of [directory, elsewhere, transcriptRoot]) mkdirSync(path);
   const mac = new FakeMac();
   fakes.push(mac);
   mac.transcriptRoot = transcriptRoot;
+  const wake = new WakeState(stateRoot);
+  const plugin = options.plugin ?? "absent";
+  if (plugin !== "absent") mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid) });
+  const ordersDirectory = join(stateRoot, "clear-orders");
+  if (plugin !== "absent") mac.modWatches = ordersDirectory;
+  mac.modRuns = plugin === "hooks and mod";
+  /** The names of the clear orders that stand on disk. */
+  const standingOrders = () => (existsSync(ordersDirectory) ? readdirSync(ordersDirectory).sort() : []);
   const poolIn = (poolDirectory: string) =>
     new Pool({
       directory: poolDirectory,
@@ -51,8 +71,9 @@ function setup() {
       processes: mac.processes,
       transcripts: new FileTranscripts(transcriptRoot),
       clock: mac.clock,
+      wake,
     });
-  return { mac, pool: poolIn(directory), poolIn, directory, elsewhere, rosterRoot, home };
+  return { mac, pool: poolIn(directory), poolIn, directory, elsewhere, rosterRoot, home, standingOrders, ordersDirectory, stateRoot };
 }
 
 const NO_SLOTS = "The roster has no slots.";
@@ -401,7 +422,7 @@ describe("status", () => {
     mac.addSession({ name: "w1", cwd: directory, kind: "background" });
 
     expect((await pool.status()).text).toBe("w1: gone");
-    expect((await pool.clear({ name: "w1" })).text).toBe('The slot "w1" is gone; nothing was typed.');
+    expect((await pool.clear({ name: "w1" })).text).toBe('The slot "w1" is gone; nothing was typed or written.');
     expect(mac.typed).toEqual([]);
   });
 
@@ -415,8 +436,228 @@ describe("status", () => {
   });
 });
 
+describe("clear, in a session in which the plugin's mod runs", () => {
+  it("writes a clear order instead of typing, and returns once the session ID has changed", async () => {
+    const { mac, pool, standingOrders } = setup({ plugin: "hooks and mod" });
+    await pool.open({ name: "w1" });
+    const { sessionId: oldId, pid } = mac.session("w1");
+    const window = mac.windowOf(mac.session("w1"));
+    const start = mac.now;
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    const newId = mac.session("w1").sessionId;
+    expect(newId).not.toBe(oldId);
+    expect(outcome).toEqual({ ok: true, text: `Cleared "w1": session ${oldId} was replaced by session ${newId}. Delivered as a clear order; nothing was typed.` });
+    expect(mac.typed).toEqual([]);
+    expect(mac.ordersSeen).toEqual([
+      { at: start, file: `${oldId}.json`, content: { version: 1, sessionId: oldId, requestedAt: new Date(start).toISOString() } },
+    ]);
+    expect(standingOrders()).toEqual([]);
+    expect(mac.session("w1").pid).toBe(pid);
+    expect(window.open).toBe(true);
+  });
+
+  it("types the command when the hook record names the session's previous session ID", async () => {
+    const { mac, pool } = setup({ plugin: "hooks and mod" });
+    await pool.open({ name: "w1" });
+    // The session got a new session ID, and the plugin's hook has not yet written it into the hook record.
+    mac.session("w1").sessionId = "00000000-0000-4000-8000-0000000000aa";
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.text).toContain('Delivered by typing "/clear"');
+    expect(mac.typed.map((entry) => entry.command)).toEqual(["/clear"]);
+    expect(mac.ordersSeen).toEqual([]);
+  });
+
+  it("waits for a busy slot to become idle before it writes the order", async () => {
+    const { mac, pool } = setup({ plugin: "hooks and mod" });
+    await pool.open({ name: "w1" });
+    const session = mac.session("w1");
+    session.status = "busy";
+    const start = mac.now;
+    mac.at(20_000, () => {
+      session.status = "idle";
+    });
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome.ok).toBe(true);
+    expect(mac.ordersSeen.map((order) => order.at - start)).toEqual([20_000]);
+    expect(mac.typed).toEqual([]);
+  });
+
+  it.each([
+    { status: "busy", waitingFor: undefined, described: "is busy" },
+    { status: "waiting", waitingFor: "input needed", described: "is waiting for input needed" },
+  ])("refuses and writes nothing when the slot $described for 60 seconds", async ({ status, waitingFor, described }) => {
+    const { mac, pool, standingOrders } = setup({ plugin: "hooks and mod" });
+    await pool.open({ name: "w1" });
+    Object.assign(mac.session("w1"), { status, waitingFor });
+    const start = mac.now;
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.text).toContain(`The slot "w1" ${described}`);
+    expect(outcome.text).toContain("nothing was typed or written");
+    expect(mac.now - start).toBe(60_000);
+    expect([mac.ordersSeen, mac.typed, standingOrders()]).toEqual([[], [], []]);
+  });
+
+  it("refuses and writes nothing when the slot is gone or ambiguous", async () => {
+    const { mac, pool, directory, standingOrders } = setup({ plugin: "hooks and mod" });
+    for (const name of ["gone", "twice"]) {
+      mac.addSession({ name, cwd: directory });
+      await pool.adopt({ name });
+    }
+    mac.endSession(mac.session("gone").pid!);
+    mac.addSession({ name: "twice", cwd: directory });
+
+    const outcomes = await Promise.all(["gone", "twice"].map((name) => pool.clear({ name })));
+
+    expect(outcomes.map((outcome) => outcome.text)).toEqual([
+      'The slot "gone" is gone; nothing was typed or written.',
+      'The slot "twice" is ambiguous, 2 sessions answer to this name; nothing was typed or written.',
+    ]);
+    expect([mac.ordersSeen, mac.typed, standingOrders()]).toEqual([[], [], []]);
+  });
+
+  it("writes each slot's order for its own session ID when two calls arrive together", async () => {
+    const { mac, pool, standingOrders } = setup({ plugin: "hooks and mod" });
+    await pool.open({ name: "w1" });
+    await pool.open({ name: "w2" });
+    const oldIds = [mac.session("w1").sessionId, mac.session("w2").sessionId];
+
+    const outcomes = await Promise.all([pool.clear({ name: "w1" }), pool.clear({ name: "w2" })]);
+
+    expect(outcomes.map((outcome) => outcome.ok)).toEqual([true, true]);
+    expect(mac.ordersSeen.map((order) => order.file).sort()).toEqual(oldIds.map((id) => `${id}.json`).sort());
+    expect([mac.session("w1").sessionId, mac.session("w2").sessionId]).not.toContainEqual(oldIds[0]);
+    expect(standingOrders()).toEqual([]);
+  });
+
+  it("writes no order for a session ID that could name a file elsewhere", async () => {
+    const { mac, pool, directory, stateRoot, standingOrders } = setup({ plugin: "hooks and mod" });
+    mac.addSession({ name: "w1", cwd: directory, sessionId: "../escaped" });
+    await pool.adopt({ name: "w1" });
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.text).toContain("is not a session ID, so no clear order was written for it");
+    expect([existsSync(join(stateRoot, "escaped.json")), standingOrders(), mac.typed]).toEqual([false, [], []]);
+  });
+
+  it.each([
+    { what: "Terminal cannot be scripted", spoil: (mac: FakeMac) => void (mac.terminalFailure = "Not authorized to send Apple events to Terminal. (-1743)") },
+    { what: "no Terminal tab hosts the slot", spoil: (mac: FakeMac) => void (mac.windowOf(mac.session("w1")).open = false) },
+  ])("delivers the order, which does not script Terminal, when $what", async ({ spoil }) => {
+    const { mac, pool, standingOrders } = setup({ plugin: "hooks and mod" });
+    await pool.open({ name: "w1" });
+    const oldId = mac.session("w1").sessionId;
+    spoil(mac);
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.text).toContain("Delivered as a clear order; nothing was typed.");
+    expect(mac.session("w1").sessionId).not.toBe(oldId);
+    expect([mac.typed, standingOrders()]).toEqual([[], []]);
+  });
+});
+
+describe("clear, when the plugin's hooks run in the session and its mod does not", () => {
+  it("reports the order as written and not confirmed 30 seconds after it was written, removes it and types nothing", async () => {
+    const { mac, pool, standingOrders } = setup({ plugin: "hooks only" });
+    await pool.open({ name: "w1" });
+    const oldId = mac.session("w1").sessionId;
+    const start = mac.now;
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome).toEqual({
+      ok: false,
+      text: `A clear order was written for the slot "w1", but its session ID was still ${oldId} after 30 seconds: not confirmed. The order was removed. Nothing was typed.`,
+    });
+    expect(mac.now - start).toBe(30_000);
+    expect(mac.ordersSeen.map((order) => order.at)).toEqual([start]);
+    expect([mac.typed, standingOrders()]).toEqual([[], []]);
+  });
+
+  it("says that the order could not be removed when it could not", async () => {
+    const { mac, pool, ordersDirectory } = setup({ plugin: "hooks only" });
+    await pool.open({ name: "w1" });
+    mac.at(500, () => chmodSync(ordersDirectory, 0o555));
+
+    try {
+      const outcome = await pool.clear({ name: "w1" });
+
+      expect(outcome.ok).toBe(false);
+      expect(outcome.text).toMatch(/not confirmed\. The order could not be removed \(.+\); it applies to no session 60 seconds after it was written\. Nothing was typed\.$/);
+    } finally {
+      chmodSync(ordersDirectory, 0o755);
+    }
+  });
+
+  it("returns at once when the slot's session disappears after the order was written", async () => {
+    const { mac, pool, standingOrders } = setup({ plugin: "hooks only" });
+    await pool.open({ name: "w1" });
+    const pid = mac.session("w1").pid!;
+    const start = mac.now;
+    mac.at(500, () => mac.endSession(pid));
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome).toEqual({ ok: false, text: 'A clear order was written for the slot "w1", and the slot is now gone: not confirmed.' });
+    expect(mac.now - start).toBe(1000);
+    expect(standingOrders()).toEqual([]);
+  });
+
+  it("says that the order was written when the sessions cannot be listed until the limit", async () => {
+    const { mac, pool, standingOrders } = setup({ plugin: "hooks only" });
+    await pool.open({ name: "w1" });
+    const start = mac.now;
+    mac.at(500, () => {
+      mac.listingFailure = "claude: command not found";
+    });
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.text).toBe(
+      'A clear order was written for the slot "w1", but the sessions could not be listed (claude: command not found) after 30 seconds: not confirmed. The order was removed. Nothing was typed.',
+    );
+    expect(mac.now - start).toBe(30_000);
+    expect(standingOrders()).toEqual([]);
+  });
+});
+
+describe("clear, when a turn starts after the order was written", () => {
+  it("does not interrupt the turn, and the mod clears the session when the turn ends", async () => {
+    const { mac, pool } = setup({ plugin: "hooks and mod" });
+    await pool.open({ name: "w1" });
+    const session = mac.session("w1");
+    const oldId = session.sessionId;
+    const start = mac.now;
+    mac.at(500, () => {
+      session.status = "busy";
+    });
+    mac.at(10_000, () => mac.endTurn(session));
+
+    const outcome = await pool.clear({ name: "w1" });
+
+    expect(outcome.ok).toBe(true);
+    expect(session.sessionId).not.toBe(oldId);
+    expect(mac.now - start).toBeGreaterThanOrEqual(10_000);
+    expect(mac.typed).toEqual([]);
+  });
+});
+
 describe("clear", () => {
-  it("types /clear into the slot's tab and returns once the session ID has changed", async () => {
+  it("types /clear into the slot's tab, and says so, when no hook record shows that the plugin's hooks run in its session", async () => {
     const { mac, pool } = setup();
     await pool.open({ name: "w1" });
     const { sessionId: oldId, pid } = mac.session("w1");
@@ -426,7 +667,10 @@ describe("clear", () => {
 
     const newId = mac.session("w1").sessionId;
     expect(newId).not.toBe(oldId);
-    expect(outcome).toEqual({ ok: true, text: `Cleared "w1": session ${oldId} was replaced by session ${newId}.` });
+    expect(outcome).toEqual({
+      ok: true,
+      text: `Cleared "w1": session ${oldId} was replaced by session ${newId}. Delivered by typing "/clear", because no hook record shows that the plugin's hooks run in this session.`,
+    });
     expect(mac.typed.map(({ windowId, command }) => ({ windowId, command }))).toEqual([{ windowId: window.id, command: "/clear" }]);
     expect(mac.session("w1").pid).toBe(pid);
     expect(window.open).toBe(true);
@@ -581,10 +825,23 @@ describe("delivering a typed command", () => {
     const outcomes = await Promise.all(["gone", "twice", "tabless"].map((name) => pool.clear({ name })));
 
     expect(outcomes.map((outcome) => outcome.text)).toEqual([
-      'The slot "gone" is gone; nothing was typed.',
-      'The slot "twice" is ambiguous, 2 sessions answer to this name; nothing was typed.',
+      'The slot "gone" is gone; nothing was typed or written.',
+      'The slot "twice" is ambiguous, 2 sessions answer to this name; nothing was typed or written.',
       `No Terminal tab hosts the slot "tabless" (pid ${mac.session("tabless").pid}); nothing was typed.`,
     ]);
+    expect(mac.typed).toEqual([]);
+  });
+
+  it.each(
+    (["clear", "compact"] as const).flatMap((tool) => (["terminalFailure", "typingFailure"] as const).map((failure) => ({ tool, failure }))),
+  )("returns Terminal's own error and types nothing when $failure, for $tool", async ({ tool, failure }) => {
+    const { mac, pool } = setup();
+    await pool.open({ name: "w1" });
+    mac[failure] = "Not authorized to send Apple events to Terminal. (-1743)";
+
+    const outcome = await pool[tool]({ name: "w1" });
+
+    expect(outcome).toEqual({ ok: false, text: "Not authorized to send Apple events to Terminal. (-1743)" });
     expect(mac.typed).toEqual([]);
   });
 
@@ -624,26 +881,29 @@ describe("only slots, and never the dispatcher session", () => {
     expect([mac.typed, mac.terminated, mac.launches]).toEqual([[], [], []]);
   });
 
-  it("acts on no session when a slot's name is now answered by the dispatcher session", async () => {
-    const { mac, pool, directory } = setup();
-    const worker = mac.addSession({ name: "w1", cwd: directory });
-    await pool.adopt({ name: "w1" });
-    mac.endSession(worker.pid!);
-    mac.addSession({ name: "w1", cwd: directory, pid: DISPATCHER_PID });
+  it.each(["absent", "hooks and mod"] as const)(
+    "acts on no session when a slot's name is now answered by the dispatcher session, with the plugin %s",
+    async (plugin) => {
+      const { mac, pool, directory, standingOrders } = setup({ plugin });
+      const worker = mac.addSession({ name: "w1", cwd: directory });
+      await pool.adopt({ name: "w1" });
+      mac.endSession(worker.pid!);
+      mac.addSession({ name: "w1", cwd: directory, pid: DISPATCHER_PID });
 
-    const outcomes = [
-      await pool.clear({ name: "w1" }),
-      await pool.compact({ name: "w1" }),
-      await pool.close({ name: "w1", force: true }),
-      await pool.recycle({ name: "w1", force: true }),
-    ];
+      const outcomes = [
+        await pool.clear({ name: "w1" }),
+        await pool.compact({ name: "w1" }),
+        await pool.close({ name: "w1", force: true }),
+        await pool.recycle({ name: "w1", force: true }),
+      ];
 
-    for (const outcome of outcomes) {
-      expect(outcome.ok).toBe(false);
-      expect(outcome.text).toContain("dispatcher session itself");
-    }
-    expect([mac.typed, mac.terminated, mac.launches]).toEqual([[], [], []]);
-  });
+      for (const outcome of outcomes) {
+        expect(outcome.ok).toBe(false);
+        expect(outcome.text).toContain("dispatcher session itself");
+      }
+      expect([mac.typed, mac.terminated, mac.launches, mac.ordersSeen, standingOrders()]).toEqual([[], [], [], [], []]);
+    },
+  );
 });
 
 describe("compact", () => {

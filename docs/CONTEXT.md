@@ -32,12 +32,16 @@ _Avoid_: registry, session table
 A slash command the server delivers to a worker session by typing it into the session's Terminal tab, after an interrupt that discards the input box. It is not a cross-session message: a slash command inside a message arrives as plain text and never runs. The `/compact` that `compact_self` types into the attached session's tab, without the interrupt, is not a typed command.
 _Avoid_: sent command, injected command
 
+**Clear order**:
+What the server leaves for a worker session so that the plugin's mod, running in that session, runs `/clear` itself instead of the server typing it. It names the conversation to clear by its session ID, so it does not apply to the conversation that the clear starts; it is neither a typed command nor a wake request.
+_Avoid_: clear request (a wake request is the other thing the server leaves), clear message (it is not a cross-session message)
+
 **Wake request**:
 What a `compact_self` call that the server handles leaves for a conversation so that the plugin's hook wakes the session when that conversation's next compaction, started by `/compact` or asked for by the plugin's mod, has finished. It belongs to the conversation, not to the session's process: after a clear the session holds another conversation, and the request does not apply to it.
 _Avoid_: follow-up, pending compaction
 
 **Hook record**:
-What the plugin's hook leaves at every session start, by which a `compact_self` call that the server handles knows that the plugin's hooks run in that session. It is not an entry in the session's transcript and not the declaration that makes Claude Code run the hook.
+What the plugin's hook leaves at every session start, by which the server knows that the plugin's hooks run in that session. It is not an entry in the session's transcript and not the declaration that makes Claude Code run the hook.
 _Avoid_: marker, hook log
 
 **Mod**:

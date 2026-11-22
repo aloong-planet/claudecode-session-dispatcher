@@ -15,11 +15,13 @@ const SESSION_ID = /^[A-Za-z0-9-]+$/;
 const HOOK_RECORD = /^(\d+)\.json$/;
 
 /**
- * What the plugin's hooks and `compact_self` leave for each other under one directory. A hook record, one per session
- * process, shows that the plugin's hooks run in that session. A wake request, one per conversation, tells the hook
- * to wake the session when the conversation's next compaction has finished.
+ * What the plugin's hooks, its mod, `compact_self` and `clear` leave for each other under one directory. A hook record,
+ * one per session process, shows that the plugin's hooks run in that session. A wake request, one per conversation,
+ * tells the hook to wake the session when the conversation's next compaction has finished. A clear order, one per
+ * conversation, tells the mod in the session to run `/clear`; only `clear` writes one, and the mod, in the session's
+ * own process, is what reads it.
  *
- * A file of either kind that does not hold what this version writes is treated as absent.
+ * A file of any kind that does not hold what this version writes is treated as absent.
  */
 export class WakeState {
   private readonly root: string;
@@ -74,11 +76,28 @@ export class WakeState {
     if (path !== undefined) rmSync(path, { force: true });
   }
 
+  /** Leaves a clear order for the conversation, in place of whatever file stood there. `at` is in milliseconds since the epoch. */
+  writeClearOrder(sessionId: string, at: number): void {
+    const path = this.clearOrderPath(sessionId);
+    if (path === undefined) throw new Error(`${JSON.stringify(sessionId)} is not a session ID, so no clear order was written for it.`);
+    writeJsonFile(path, { version: VERSION, sessionId, requestedAt: new Date(at).toISOString() });
+  }
+
+  /** Removes the conversation's clear order, if it has one. */
+  removeClearOrder(sessionId: string): void {
+    const path = this.clearOrderPath(sessionId);
+    if (path !== undefined) rmSync(path, { force: true });
+  }
+
   private hookRecordPath(pid: number): string {
     return join(this.root, "hooks", `${pid}.json`);
   }
 
   private wakeRequestPath(sessionId: string): string | undefined {
     return SESSION_ID.test(sessionId) ? join(this.root, "wake-requests", `${sessionId}.json`) : undefined;
+  }
+
+  private clearOrderPath(sessionId: string): string | undefined {
+    return SESSION_ID.test(sessionId) ? join(this.root, "clear-orders", `${sessionId}.json`) : undefined;
   }
 }

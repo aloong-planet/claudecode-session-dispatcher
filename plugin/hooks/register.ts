@@ -7,13 +7,22 @@
 // session this module is not loaded in, the call reaches the server, which types /compact and leaves the waking to
 // that hook.
 //
+// It also runs /clear for the server's `clear` tool. The server leaves a clear order, a file named after the session's
+// session ID, in a directory that the mod has Claude Code watch; when Claude Code tells the mod of a change there, and
+// when a turn ends, the mod looks for the order of the session's present session ID and, if it stands and is less than a
+// minute old, has Claude Code run /clear once no turn is running. Nothing is typed into the window and Terminal is not
+// scripted; whether this works while the screen is locked has not been measured. A session that this module is not
+// loaded in has no such order acted on: the server sees no change of the session ID, and reports that the clear is not
+// confirmed.
+//
 // In every session, interactive or not, it also offers a tool of its own, context_usage, which answers the session
 // with the size of its own context as Claude Code's status line has it. A session this module is not loaded in has no
 // such tool, nor has one in which Claude Code refuses it, such as a session with no built-in tools: there the mod
 // writes Claude Code's reason into Claude Code's debug log alone.
 //
 // The module imports nothing: Claude Code gives a mod neither Node's modules nor the repository's packages. The types
-// below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322.
+// below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322; what the
+// clear order uses (the watch paths of classic.SessionStart, classic.FileChanged and $.command.run) was measured on 2.1.327.
 
 /** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
 type ContextFigures = { tokens?: number; window: number; percent?: number };
@@ -21,6 +30,8 @@ type Engine = {
   env: { get: (name: string) => Promise<string | undefined> };
   /** Reads a file's text; rejects when it cannot. */
   fs: { read: (path: string) => Promise<string> };
+  /** Runs a slash command as if the user typed it, once the session is idle. Rejects when Claude Code does not take it. */
+  command: { run: (args: { command: string }) => Promise<unknown> };
   /** Declares a tool of the mod's own, which the model calls as `mcp__<plugin>__<name>`. */
   tool: { register: (spec: { name: string; description: string; inputSchema: Record<string, unknown>; isDeferred: boolean }) => Promise<unknown> };
   session: {
@@ -31,11 +42,11 @@ type Engine = {
   };
   /** Starts a turn with `text` once the session is idle. */
   prompt: { submit: (args: { text: string }) => Promise<unknown> };
-  clock: { after: (ms: number, run: () => void) => unknown };
+  clock: { now: () => Promise<number>; after: (ms: number, run: () => void) => unknown };
   /** Appends a line to the transcript, or with `{ to: "debug" }` to Claude Code's debug log alone (measured on 2.1.325). */
   ui: { log: (text: string, options?: { to?: "transcript" | "debug" }) => void };
 };
-type Hook<Input> = ($: Engine, e: Input, next: (e: Input) => Promise<unknown>) => Promise<unknown>;
+type Hook<Input, Answer = unknown> = ($: Engine, e: Input, next: (e: Input) => Promise<Answer>) => Promise<unknown>;
 /** Why a turn ended: with the model's answer, by the user's interrupt, on a refusal by the model, or on an API error. */
 type TurnEnd = { agentId?: string; reason: "answer" | "aborted" | "refusal" | "error" };
 type On = {
@@ -43,6 +54,10 @@ type On = {
   (event: "tool.call", hook: Hook<{ tool: string; agentId?: string }>): void;
   (event: "turn.start", hook: Hook<{ agentId?: string }>): void;
   (event: "turn.complete", hook: Hook<TurnEnd>): void;
+  /** Claude Code's `SessionStart` hooks, which may name paths to watch; `next` resolves to what the hooks before this one returned. */
+  (event: "classic.SessionStart", hook: Hook<{ source?: string }, { watchPaths?: string[] } | undefined>): void;
+  /** Claude Code tells of a file that was added, changed or removed under a path that a `SessionStart` hook named. */
+  (event: "classic.FileChanged", hook: Hook<{ file_path: string; event: string }>): void;
 };
 
 /** The server's tool, under the name a session sees it by. */
@@ -70,6 +85,10 @@ const SIZE_NOT_KNOWN =
   "The size of this session's context is not known: Claude Code does not have all of its figures. It has none before the first model response after the session starts or its conversation is compacted.";
 /** The server's wake requests, under the user's home directory, in the form `src/wake.ts` writes them. */
 const WAKE_REQUESTS = ".claude-session-pool/wake-requests";
+/** The server's clear orders, in the same place and the same form. */
+const CLEAR_ORDERS = ".claude-session-pool/clear-orders";
+/** How long after the server wrote it a clear order is acted on; the server stops waiting for it after 30 seconds. */
+const ORDER_LIFETIME_MS = 60_000;
 const SESSION_ID = /^[A-Za-z0-9-]+$/;
 const RETRY_MS = 2_000;
 const MAX_RETRIES = 5;
@@ -89,6 +108,8 @@ type State = {
   request: Request | undefined;
   /** Counts the turn ends at which a compaction was due, so that an attempt left over from an earlier one stops. */
   due: number;
+  /** The session ID that the mod asked Claude Code to clear the session of, so that its order is acted on once. */
+  clearing: string | undefined;
 };
 
 // Claude Code lets a mod pass `$` only to functions declared at the top of the module, so these two are not closures
@@ -117,6 +138,46 @@ async function hasWakeRequest($: Engine, sessionId: string): Promise<boolean> {
     return version === 1 && named === sessionId && typeof requestedAt === "string" && !Number.isNaN(Date.parse(requestedAt));
   } catch {
     return false;
+  }
+}
+
+/**
+ * The session ID that a standing clear order names, if one does for the session's present session ID: a file the server
+ * leaves (`WakeState.writeClearOrder`), named after the ID, that holds that ID and is less than a minute old. One that
+ * cannot be read counts as absent.
+ */
+async function orderedSessionId($: Engine): Promise<string | undefined> {
+  try {
+    const sessionId = await $.session.id();
+    const home = await $.env.get("HOME");
+    if (!SESSION_ID.test(sessionId) || home === undefined || home === "") return undefined;
+    const record: unknown = JSON.parse(await $.fs.read(`${home}/${CLEAR_ORDERS}/${sessionId}.json`));
+    if (typeof record !== "object" || record === null || Array.isArray(record)) return undefined;
+    const { version, sessionId: named, requestedAt } = record as Record<string, unknown>;
+    if (version !== 1 || named !== sessionId || typeof requestedAt !== "string") return undefined;
+    const age = (await $.clock.now()) - Date.parse(requestedAt);
+    return age >= 0 && age < ORDER_LIFETIME_MS ? sessionId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Has Claude Code run /clear when a clear order stands for the session and no turn is running; a turn that ends brings it
+ * up again. Claude Code rejects the command while it is asked for from the event hook that is still running, which another
+ * plugin's slower hook under this one can keep so, so the call is made from a timer and tried again a little later.
+ */
+async function clearIfOrdered($: Engine, state: State, attempt: number): Promise<void> {
+  if (state.isTurnRunning) return;
+  const sessionId = await orderedSessionId($);
+  if (sessionId === undefined || sessionId === state.clearing || state.isTurnRunning) return;
+  state.clearing = sessionId;
+  try {
+    await $.command.run({ command: "clear" });
+  } catch {
+    // Claude Code did not take the command, and queued nothing. The order is looked at again while it stands.
+    state.clearing = undefined;
+    if (attempt < MAX_RETRIES) $.clock.after(RETRY_MS, () => void clearIfOrdered($, state, attempt + 1));
   }
 }
 
@@ -168,7 +229,19 @@ async function contextUsage($: Engine): Promise<{ result: string } | { deny: str
 }
 
 export const register = (on: On): void => {
-  const state: State = { isInteractive: false, isTurnRunning: false, request: undefined, due: 0 };
+  const state: State = { isInteractive: false, isTurnRunning: false, request: undefined, due: 0, clearing: undefined };
+
+  on("classic.SessionStart", async ($, e, next) => {
+    const answered = await next(e);
+    const home = await $.env.get("HOME");
+    if (home === undefined || home === "") return answered;
+    return { ...answered, watchPaths: [...(answered?.watchPaths ?? []), `${home}/${CLEAR_ORDERS}`] };
+  });
+
+  on("classic.FileChanged", async ($, e, next) => {
+    $.clock.after(0, () => void clearIfOrdered($, state, 0));
+    return next(e);
+  });
 
   on("session.start", async ($, e, next) => {
     state.isInteractive = e.isInteractive;
@@ -206,6 +279,7 @@ export const register = (on: On): void => {
     const answered = await next(e);
     if (e.agentId !== undefined) return answered;
     state.isTurnRunning = false;
+    $.clock.after(0, () => void clearIfOrdered($, state, 0));
     const asked = state.request;
     if (asked === undefined) return answered;
     state.due += 1;

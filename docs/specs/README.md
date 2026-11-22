@@ -6,4 +6,8 @@ A spec states product behaviour, facts about the external systems the feature re
 
 | Spec | In one line |
 |---|---|
-| [claude-session-pool](claude-session-pool.md) | A Claude Code plugin whose MCP server lets a dispatcher session open, adopt, clear, compact, inspect, close, replace and release worker sessions running in Terminal windows, which gives every session that has it a tool to compact its own conversation and wakes that session afterwards, and which, where its mod runs and Claude Code accepts the mod's tool, gives every session a tool that reports the size of its own context. |
+| [claude-session-pool](claude-session-pool.md) | The nine tools with which a dispatcher session opens, adopts, clears, compacts, inspects, closes, replaces and releases worker sessions running in Terminal windows. |
+| [claude-session-pool-compact-self](claude-session-pool-compact-self.md) | The tool `compact_self`, with which a session compacts its own conversation and is woken afterwards so that it carries on. |
+| [claude-session-pool-context-usage](claude-session-pool-context-usage.md) | The tool `context_usage`, with which a session in which the plugin's mod runs learns the size of its own context. |
+| [claude-session-pool-plugin](claude-session-pool-plugin.md) | The one Claude Code plugin that carries the server, the hooks and the mod, the one installation that gives it to every session, and the hook record that shows the hooks run. |
+| [claude-session-pool-startup](claude-session-pool-startup.md) | The start-up command that starts the dispatcher session under one name across restarts, marks it, and gives it the plugin where the installation does not reach it. |
