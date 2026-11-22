@@ -1,6 +1,6 @@
 # claude-session-pool
 
-> Related: [ADR-0001](../adr/0001-interactive-terminal-worker-sessions.md), [ADR-0002](../adr/0002-wake-by-hook-plugin-delivery.md), [ADR-0003](../adr/0003-clear-through-a-clear-order-the-mod-acts-on.md)
+> Related: [ADR-0001](../adr/0001-interactive-terminal-worker-sessions.md), [ADR-0002](../adr/0002-wake-by-hook-plugin-delivery.md)
 
 ## Problem Statement
 
@@ -243,7 +243,7 @@ Boundaries and failures:
 - **`/clear` is followed at once by `compact_self` or by another `clear`**: the hook record may still name the old session ID. `compact_self` then refuses (claude-session-pool::US-008/AC-06), and `clear` types the command (claude-session-pool::REQ-007/AC-01).
 - **A turn starts in the worker session between the idle check and the clear order**: the turn is not interrupted, and the mod runs `/clear` when it ends (claude-session-pool::REQ-007/AC-02). When that is more than 30 seconds after the order was written, `clear` has ended and removed the order (claude-session-pool::US-003/AC-02), so no clear follows.
 - **The plugin's hooks run in a worker session and its mod does not**, because its Claude Code does not load the mod: nothing acts on the order, and `clear` ends as claude-session-pool::US-003/AC-02 states.
-- **A process of the same user writes a clear order** for a session's present session ID, the dispatcher session's included: the mod acts on it as on the server's (claude-session-pool::REQ-007/AC-02), and nothing checks who wrote it (ADR-0003).
+- **A process of the same user writes a clear order** for a session's present session ID, the dispatcher session's included: the mod acts on it as on the server's (claude-session-pool::REQ-007/AC-02), and nothing checks who wrote it (ADR-0001).
 - **A hook of another plugin keeps the file-change event that told the mod of a clear order for longer than the mod keeps asking** (claude-session-pool::REQ-007/AC-02): the order is not acted on, and `clear` ends unconfirmed (claude-session-pool::US-003/AC-02).
 - **The screen is locked**: whether Claude Code tells the mod of a change under the directory of the clear orders, and runs its `/clear`, has not been measured.
 - **A subagent of the session calls `compact_self`**: where the mod answers calls, it refuses this one (claude-session-pool::US-008/AC-13). The server cannot tell the call from one made by the session itself, and where it handles the call it compacts the session.

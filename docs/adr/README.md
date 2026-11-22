@@ -12,6 +12,9 @@ Each record states one decision that is in force in this project, with the optio
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-interactive-terminal-worker-sessions.md) | Worker sessions are interactive sessions in Terminal windows | Accepted (2026-11-11) |
+| [0001](0001-interactive-terminal-worker-sessions.md) | Worker sessions are interactive sessions in Terminal windows, and are cleared through the plugin's mod where its hooks run | Proposed |
 | [0002](0002-wake-by-hook-plugin-delivery.md) | A session that compacts itself is woken by the plugin's mod, or by a hook where the mod does not run; the server, the hooks and the mod are one plugin | Proposed |
-| [0003](0003-clear-through-a-clear-order-the-mod-acts-on.md) | A worker session is cleared through a clear order that the plugin's mod acts on, and by typing only where the plugin does not run | Proposed |
+
+## Retired numbers
+
+- 0003 → 0001
