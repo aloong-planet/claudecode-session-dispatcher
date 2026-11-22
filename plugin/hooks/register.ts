@@ -62,7 +62,7 @@ type On = {
 
 /** The server's tool, under the name a session sees it by. */
 const TOOL = "mcp__plugin_cc-session-pool_pool__compact_self";
-/** The same sentence as the plugin's hook hands over; `tests/mod.test.ts` and `tests/hooks.test.ts` hold both to it. */
+/** The same sentence as the plugin's hook hands over; `tests/claude-session-pool-compact-self.test.ts` holds both to it. */
 const WAKE_SENTENCE = "The compaction this session requested with compact_self has finished. This is not an error. Continue the work that was in progress.";
 const ANSWER =
   "The conversation of this session is compacted when this turn ends, with nothing typed into its window, so end the turn now. When the compaction has finished, this session is woken.";

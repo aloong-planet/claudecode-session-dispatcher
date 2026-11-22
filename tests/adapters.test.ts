@@ -3,7 +3,7 @@
  * fed in are shaped like what `claude agents --json`, `ps` and Terminal printed on 2026-11-10 (Claude Code 2.1.318).
  *
  * Not covered here: what Terminal does with the scripts it is sent. That needs the real application; see
- * `terminal.live.test.ts`.
+ * `claude-session-pool.live.test.ts`.
  */
 import { spawn, execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";

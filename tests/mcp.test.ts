@@ -2,7 +2,7 @@
  * The tools as an MCP client sees them: the real server object over an in-memory channel, on a pool and a
  * self-compaction that run on `FakeMac`. Each case proves which tools a session is offered, that a tool's arguments
  * reach the operation and that its outcome comes back; the rules themselves are covered in
- * `claude-session-pool.test.ts` and `self-compaction.test.ts`.
+ * `claude-session-pool.test.ts` and `claude-session-pool-compact-self.test.ts`.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

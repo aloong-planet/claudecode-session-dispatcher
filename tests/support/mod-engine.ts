@@ -1,0 +1,172 @@
+/**
+ * A fake of the engine Claude Code hands the plugin's mod, handed in the way Claude Code hands in its own: it records what
+ * the mod asks for (a compaction, a prompt, a timer, a tool of its own, a command) and lets a test decide how each
+ * compaction ends and which context figures Claude Code has. `modSetup` registers the mod's own `register` in it.
+ */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { register } from "../../plugin/hooks/register.ts";
+import { WakeState } from "../../src/wake.ts";
+import { SESSION } from "./sessions.ts";
+import { temporaryDirectory } from "./temporary.ts";
+
+export const TOOL = "mcp__plugin_cc-session-pool_pool__compact_self";
+/** What Claude Code 2.1.325 rejects a mod's tool with in a session started with no built-in tools. */
+export const REGISTRATION_REFUSED = 'cc-session-pool: $.tool.register: "context_usage" refused: this session has no built-in tools (--tools ""), so it takes none from plugins';
+/** The session ID that a `/clear` in the session gives it. */
+export const AFTER_CLEAR = "5b1f9a3e-7a49-4c0e-92a7-0f6f4f7c1a11";
+/** What Claude Code 2.1.327 rejects a mod's `$.command.run` with when it is called while a `classic.FileChanged` event is dispatched. */
+const FROM_FILE_CHANGED =
+  "cc-session-pool: $.command.run: called from a classic.FileChanged hook, it would wait on the turn this hook is holding; run it from a later event (turn.complete) (host check)";
+/** What the server's tool would have returned, had the call reached it. */
+export const FROM_SERVER = { result: "from the server" };
+/** The mod's own tool, under the name a session sees it by. */
+export const USAGE_TOOL = "mcp__cc-session-pool__context_usage";
+/**
+ * What Claude Code 2.1.322 gave a mod's `$.session.usage()` in a tool call: the `context` of the second call of the
+ * measured run (research: context-usage-as-a-tool.md, "Measured"), with the other figures in the form its types give.
+ */
+export const MEASURED = { startedAt: 1_794_810_000_000, context: { tokens: 58965, window: 1000000, percent: 6 }, rateLimits: [], cost: { usd: 0.04 } };
+
+type Hook = ($: unknown, e: unknown, next: (e: unknown) => Promise<unknown>) => Promise<unknown>;
+export type Compaction = { finish: (outcome?: { skip?: string }) => Promise<void>; refuse: (message: string) => Promise<void> };
+
+/** Lets everything the mod started and is not waiting for run to its next wait. */
+export const settle = async () => {
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+};
+
+/**
+ * A session with the mod registered in it, and the events Claude Code tells a mod of. `told` is whether the mod was told
+ * that the session started; `registerFails`, whether Claude Code refuses the mod's tool; `homeKnown`, whether the
+ * mod can learn the user's home directory.
+ */
+export async function modSetup({ interactive = true, told = true, registerFails = false, homeKnown = true } = {}) {
+  const hooks = new Map<string, Hook>();
+  register((event: string, hook: unknown) => void hooks.set(event, hook as Hook));
+  /** `idFails`: Claude Code does not give the mod the session's ID. */
+  const session = { id: SESSION, idFails: false };
+  // The user's home directory, where the server keeps its wake requests; `wake` is how the server leaves one.
+  const home = temporaryDirectory();
+  const wake = new WakeState(join(home, ".claude-session-pool"));
+  const compactions: Compaction[] = [];
+  const prompts: string[] = [];
+  const timers: { ms: number; run: () => void }[] = [];
+  /** The tools the mod registered, as it described them. */
+  const tools: unknown[] = [];
+  /** What Claude Code answers the mod's request for the session's figures with. */
+  const usage = { answer: (): Promise<unknown> => Promise.resolve(MEASURED) };
+  /** The lines the mod logged, with where it sent each. */
+  const logs: { text: string; options?: unknown }[] = [];
+  /** The time Claude Code tells the mod, in milliseconds since the epoch. */
+  const time = { now: Date.UTC(2026, 10, 22, 3, 0, 0) };
+  /** The slash commands the mod asked Claude Code to run. `fails`: Claude Code rejects them. `held`: they are queued and have not run. */
+  const commands: string[] = [];
+  const clears = { fails: false, held: false, release: () => {} };
+  /** Whether a `classic.FileChanged` event is being dispatched: Claude Code rejects `$.command.run` while it is. */
+  const dispatching = { fileChanged: false };
+  /** The paths the mod read. */
+  const reads: string[] = [];
+  const engine = {
+    ui: { log: (text: string, options?: unknown) => void logs.push({ text, options }) },
+    env: { get: (name: string) => Promise.resolve(name === "HOME" && homeKnown ? home : undefined) },
+    fs: { read: (path: string) => Promise.resolve().then(() => (reads.push(path), readFileSync(path, "utf8"))) },
+    tool: {
+      register: (spec: { name: string }) =>
+        registerFails
+          ? Promise.reject(new Error(REGISTRATION_REFUSED))
+          : (tools.push(spec), Promise.resolve({ tool: `mcp__cc-session-pool__${spec.name}` })),
+    },
+    session: {
+      usage: () => usage.answer(),
+      id: () => (session.idFails ? Promise.reject(new Error("no session")) : Promise.resolve(session.id)),
+      compact: () =>
+        new Promise<{ skip?: string }>((resolve, reject) => {
+          compactions.push({
+            finish: async (outcome = {}) => (resolve(outcome), await settle()),
+            refuse: async (message) => (reject(new Error(message)), await settle()),
+          });
+        }),
+    },
+    prompt: { submit: ({ text }: { text: string }) => (prompts.push(text), Promise.resolve({ text })) },
+    clock: { now: () => Promise.resolve(time.now), after: (ms: number, run: () => void) => void timers.push({ ms, run }) },
+    command: {
+      run: ({ command }: { command: string }) => {
+        commands.push(command);
+        if (clears.fails) return Promise.reject(new Error("cc-session-pool: $.command.run: the session is stopping"));
+        if (dispatching.fileChanged) return Promise.reject(new Error(FROM_FILE_CHANGED));
+        const ran = () => {
+          // A /clear gives the session a new session ID.
+          if (command === "clear") session.id = AFTER_CLEAR;
+          return { text: "" };
+        };
+        return clears.held ? new Promise((resolve) => (clears.release = () => resolve(ran()))) : Promise.resolve(ran());
+      },
+    },
+  };
+  const tell = (event: string, input: unknown, fromCore: unknown = {}, below?: Promise<unknown>) =>
+    hooks.get(event)!(engine, input, () => (below === undefined ? Promise.resolve(fromCore) : below.then(() => fromCore)));
+  if (told) await tell("session.start", { cwd: "/somewhere", surface: interactive ? "terminal" : null, isInteractive: interactive });
+
+  return {
+    session,
+    home,
+    wake,
+    time,
+    commands,
+    clears,
+    reads,
+    /** Claude Code tells the mod that a session started, by way of the classic `SessionStart` hook; resolves to what the mod answers. */
+    classicStart: (source: string, fromCore?: unknown) => tell("classic.SessionStart", { hook_event_name: "SessionStart", source }, fromCore),
+    /**
+     * Claude Code tells the mod that a file under a path it asked to watch was added, changed or removed. The event is
+     * dispatched until the hook has returned and a moment after; `holdBelow` makes a hook under the mod's keep it so until
+     * the returned `release` is called. Then whatever the mod set a timer of no delay for runs. `fromCore` is what the
+     * hooks under the mod's answer; `answered` is what the mod answers (once `end` has run, when the event is held).
+     */
+    fileChanged: async (
+      file = `${home}/.claude-session-pool/clear-orders/${SESSION}.json`,
+      event = "add",
+      { holdBelow = false, fromCore = {} }: { holdBelow?: boolean; fromCore?: unknown } = {},
+    ) => {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      dispatching.fileChanged = true;
+      const dispatch = tell("classic.FileChanged", { hook_event_name: "FileChanged", file_path: file, event }, fromCore, holdBelow ? gate : undefined);
+      await settle();
+      if (holdBelow) await runTimers(0);
+      const end = async () => {
+        release();
+        const answered = await dispatch;
+        await settle();
+        dispatching.fileChanged = false;
+        await runTimers(0);
+        return answered;
+      };
+      return { end, answered: holdBelow ? undefined : await end() };
+    },
+    compactions,
+    prompts,
+    timers,
+    tools,
+    usage,
+    logs,
+    /** A call to a tool; resolves to what the model receives for it. */
+    calls: (tool = TOOL, agentId?: string) => tell("tool.call", { tool, tool_use_id: "toolu_01", ...(agentId === undefined ? {} : { agentId }) }, FROM_SERVER),
+    turnStarts: () => tell("turn.start", { text: "", turnId: "t" }),
+    /** A turn of the session ends; then whatever the mod set a timer of no delay for runs. */
+    turnEnds: async (reason = "answer") => {
+      await tell("turn.complete", { reason, turnId: "t", answer: "" }, { text: "" });
+      await runTimers(0);
+    },
+    /** Runs the timers set with this delay, in the order they were set. */
+    runTimers,
+  };
+
+  async function runTimers(ms: number) {
+    const due = timers.filter((timer) => timer.ms === ms);
+    for (const timer of due) timers.splice(timers.indexOf(timer), 1);
+    for (const timer of due) timer.run();
+    await settle();
+  }
+}
