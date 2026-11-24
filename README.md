@@ -11,7 +11,7 @@ What the plugin does, in full, is in the specs, listed in [docs/specs/README.md]
 ## Requirements
 
 - **macOS with the Terminal app.** Worker sessions run in Terminal windows. When a session's call to `compact_self` is handled by the plugin's server rather than its mod, or the dispatcher session's `clear` is typed instead of left as an order (see [Tools](#tools)), the session must run in a Terminal window too. The plugin opens and types into Terminal windows through Terminal's scripting interface; when macOS refuses that automation request, the tool returns the error.
-- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325. `clear` through the mod was measured on 2.1.327 only, with the screen unlocked; it has not been measured on earlier versions or on a locked screen.
+- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325. `clear` through the mod was measured on 2.1.327 only, with the screen unlocked and with it locked for up to five minutes; it has not been measured on earlier versions or with a longer lock.
 - **Node.js 22.18 or later**, found on the `PATH` of the sessions that load the plugin. The server and the hooks run on it directly, with no build step.
 - **pnpm**, to install the packages the server needs.
 
