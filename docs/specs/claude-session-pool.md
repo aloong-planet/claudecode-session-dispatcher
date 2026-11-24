@@ -160,7 +160,7 @@ Boundaries and failures:
 - **A process of the same user writes a clear order** for a session's present session ID, the dispatcher session's included: the mod acts on it as on the server's (claude-session-pool::REQ-007/AC-02), and nothing checks who wrote it (ADR-0001).
 - **A hook of another plugin keeps the file-change event that told the mod of a clear order for longer than the mod keeps asking** ([claude-session-pool-plugin::REQ-002](claude-session-pool-plugin.md)): the order is not acted on, and `clear` ends unconfirmed (claude-session-pool::US-003/AC-02).
 - **The mod is loaded again**: it is told of no change under the directory of the clear orders until the session starts again, so a `clear` of that session ends unconfirmed (claude-session-pool::US-003/AC-02).
-- **The screen is locked**: whether Claude Code tells the mod of a change under the directory of the clear orders, and runs its `/clear`, has not been measured.
+- **The screen is locked**: Claude Code tells the mod of a change under the directory of the clear orders, and runs its `/clear`, as when the screen is unlocked (measured on Claude Code 2.1.327; a lock of hours has not been measured).
 
 ## Implementation Decisions
 

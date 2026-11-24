@@ -11,9 +11,9 @@
  * Not covered here, because it needs the real programs: what `/clear` and `/compact` do inside Claude Code, that
  * Ctrl+C empties its input box, that Terminal puts the earlier window back in front, and that Claude Code's file watch
  * tells the mod of a clear order, which the mod then runs. The Terminal part is covered by `claude-session-pool.live.test.ts` when it
- * is enabled; the Claude Code part was checked by hand with real sessions on Claude Code 2.1.327. Nothing checked a
- * `clear` while the screen is locked. The Claude Code part is to be checked again when Claude Code changes its interface for
- * mods.
+ * is enabled; the Claude Code part was checked by hand with real sessions on Claude Code 2.1.327, also with the screen
+ * locked for up to five minutes (a longer lock was not checked). The Claude Code part is to be checked again when Claude
+ * Code changes its interface for mods.
  *
  * Two boundaries of the spec cannot be driven at all. A message that reaches a slot between the idle check and the
  * typing: the server does not detect it, so there is nothing to assert. The dispatcher session ending while a
