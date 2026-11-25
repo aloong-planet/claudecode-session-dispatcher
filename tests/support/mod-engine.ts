@@ -4,7 +4,7 @@
  * decide how each compaction ends, whether a prompt is taken, which context figures Claude Code has and which subagents
  * it lists. `modSetup` registers the mod's own `register` in it.
  */
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { register } from "../../plugin/hooks/register.ts";
 import { WakeState } from "../../src/wake.ts";
@@ -57,6 +57,11 @@ export const settle = async () => {
  * mod can learn the user's home directory.
  */
 export async function modSetup({ interactive = true, told = true, registerFails = false, homeKnown = true } = {}) {
+  /**
+   * The environment variable the start-up command leaves in a dispatcher session's environment
+   * (`CLAUDE_SESSION_POOL_DISPATCHER_PID`); unset in any other session.
+   */
+  const variables = { dispatcherPid: undefined as string | undefined };
   const hooks = new Map<string, Hook>();
   register((event: string, hook: unknown) => void hooks.set(event, hook as Hook));
   /** `idFails`: Claude Code does not give the mod the session's ID. */
@@ -105,9 +110,21 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   /** The paths the mod read, and those it wrote. */
   const reads: string[] = [];
   const writes: string[] = [];
+  /** The session's project root (`$.session.root()`): the directory it was started in. */
+  const root = { path: join(home, "project") };
+  mkdirSync(root.path);
+  /**
+   * What the commands the mod runs print: `claude agents --json` prints `listing.text` and exits with `listing.exitCode`;
+   * `fails`: the command cannot be started. `runs` holds the argument vector of every command the mod ran.
+   */
+  const listing = { text: "[]", exitCode: 0, fails: false };
+  const runs: string[][] = [];
   const engine = {
     ui: { log: (text: string, options?: unknown) => void logs.push({ text, options }) },
-    env: { get: (name: string) => Promise.resolve(name === "HOME" && homeKnown ? home : undefined) },
+    env: {
+      get: (name: string) =>
+        Promise.resolve(name === "HOME" && homeKnown ? home : name === "CLAUDE_SESSION_POOL_DISPATCHER_PID" ? variables.dispatcherPid : undefined),
+    },
     fs: {
       read: (path: string) => Promise.resolve().then(() => (reads.push(path), readFileSync(path, "utf8"))),
       // As Claude Code 2.1.327 does: makes the directories the path needs and writes the file in place.
@@ -116,6 +133,13 @@ export async function modSetup({ interactive = true, told = true, registerFails 
           writes.push(path);
           mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, text);
+        }),
+      exists: (path: string) => Promise.resolve().then(() => existsSync(path)),
+      // As Claude Code 2.1.327 does: rejects when the path is missing; with `resolve`, also where it lands.
+      stat: (path: string, options?: { resolve?: boolean }) =>
+        Promise.resolve().then(() => {
+          const stat = statSync(path);
+          return { kind: stat.isDirectory() ? "dir" : "file", size: stat.size, mtimeMs: stat.mtimeMs, ...(options?.resolve ? { realPath: realpathSync(path) } : {}) };
         }),
       list: (path: string) =>
         Promise.resolve().then(() =>
@@ -137,6 +161,7 @@ export async function modSetup({ interactive = true, told = true, registerFails 
       usage: () => usage.answer(),
       id: () => (session.idFails ? Promise.reject(new Error("no session")) : Promise.resolve(session.id)),
       info: () => Promise.resolve({ transcriptPath }),
+      root: () => Promise.resolve(root.path),
       compact: () =>
         new Promise<{ skip?: string }>((resolve, reject) => {
           compactions.push({
@@ -162,6 +187,14 @@ export async function modSetup({ interactive = true, told = true, registerFails 
         const interval = { ms, run };
         intervals.push(interval);
         return () => void (intervals.includes(interval) && intervals.splice(intervals.indexOf(interval), 1));
+      },
+    },
+    process: {
+      run: (argv: readonly string[]) => {
+        runs.push([...argv]);
+        if (listing.fails) return Promise.reject(new Error("cc-session-pool: $.process.run: claude: command not found"));
+        const known = argv.join(" ") === "claude agents --json";
+        return Promise.resolve({ exitCode: known ? listing.exitCode : 127, stdout: known ? listing.text : "", stderr: "" });
       },
     },
     command: {
@@ -193,6 +226,12 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     session,
     home,
     wake,
+    variables,
+    root,
+    listing,
+    runs,
+    /** Claude Code tells the mod that the session started, for a setup made with `told: false`. */
+    start,
     time,
     commands,
     clears,
@@ -277,13 +316,15 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     calls: (tool = TOOL, agentId?: string) => tell("tool.call", { tool, tool_use_id: "toolu_01", ...(agentId === undefined ? {} : { agentId }) }, FROM_SERVER),
     /**
      * A call to a tool that Claude Code runs and that has not returned yet, as a Bash command that takes a while: the mod is
-     * told of it and has passed it on. `returns` lets the tool return and resolves to what the model receives.
+     * told of it, with its arguments beside `tool` as Claude Code 2.1.327 tells them, and has passed it on. `returns` lets
+     * the tool return and resolves to what the model receives. `fromCore` is what Claude Code's `next(e)` resolves to,
+     * the tool's result or, for a tool that reported an error, a result with `isError`.
      */
-    startsCall: async (tool: string, agentId?: string) => {
+    startsCall: async (tool: string, agentId?: string, args: Record<string, unknown> = {}, fromCore: unknown = FROM_SERVER) => {
       callsMade += 1;
       let release = () => {};
       const ran = new Promise<void>((resolve) => (release = resolve));
-      const answered = tell("tool.call", { tool, tool_use_id: `toolu_${callsMade}`, ...(agentId === undefined ? {} : { agentId }) }, FROM_SERVER, ran);
+      const answered = tell("tool.call", { ...args, tool, tool_use_id: `toolu_${callsMade}`, ...(agentId === undefined ? {} : { agentId }) }, fromCore, ran);
       await settle();
       return {
         returns: async () => {

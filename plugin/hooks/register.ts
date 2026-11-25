@@ -26,17 +26,22 @@
 // In an interactive session it also keeps the session's activity record, which it writes when Claude Code loads it and
 // at every look (activity.ts).
 //
+// In a dispatcher session it also writes the pool's look record at every look, with what the look found of each slot of
+// the roster, and writes a slot's entry anew when the session's call to `clear`, `open` or `recycle` that names the slot
+// has returned (pool-look.ts).
+//
 // The module imports nothing but the files of the plugin beside it, which Claude Code 2.1.327 loads with it: Claude Code
 // gives a mod neither Node's modules nor the repository's packages. The types
 // below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322; what the
 // clear order uses (the watch paths of classic.SessionStart, classic.FileChanged and $.command.run) was measured on 2.1.327.
 
 import { callReturned, callStarted, loadActivity, lookAtActivity, newActivity, turnEnded, turnStarted, writeActivity, type Activity } from "./activity.ts";
+import { POOL_TOOLS, newPoolLook, recordPool, type PoolEngine, type PoolLook } from "./pool-look.ts";
 import { lookAtSubagents, reportText, type Watch, type WatchEngine } from "./subagent-watch.ts";
 
 /** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
 type ContextFigures = { tokens?: number; window: number; percent?: number };
-type Engine = WatchEngine & {
+type Engine = WatchEngine & PoolEngine & {
   env: { get: (name: string) => Promise<string | undefined> };
   /** Reads a file's text, or writes one in place, making the directories its path needs; rejects when it cannot. */
   fs: WatchEngine["fs"] & { read: (path: string) => Promise<string>; write: (path: string, text: string) => Promise<unknown> };
@@ -60,7 +65,8 @@ type Engine = WatchEngine & {
   /** Appends a line to the transcript, or with `{ to: "debug" }` to Claude Code's debug log alone (measured on 2.1.325). */
   ui: { log: (text: string, options?: { to?: "transcript" | "debug" }) => void };
 };
-type ToolCall = { tool: string; agentId?: string };
+/** A call's arguments are fields of the event beside `tool` (measured on 2.1.327). */
+type ToolCall = { tool: string; agentId?: string; name?: unknown };
 type Hook<Input, Answer = unknown> = ($: Engine, e: Input, next: (e: Input) => Promise<Answer>) => Promise<unknown>;
 /** Why a turn ended: with the model's answer, by the user's interrupt, on a refusal by the model, or on an API error. */
 type TurnEnd = { agentId?: string; reason: "answer" | "aborted" | "refusal" | "error" };
@@ -132,6 +138,7 @@ type State = {
   reporting: boolean;
   watch: Watch;
   activity: Activity;
+  pool: PoolLook;
 };
 
 // Claude Code lets a mod pass `$` only to functions declared at the top of a module (of an imported one as well, as
@@ -244,6 +251,7 @@ async function compact($: Engine, state: State, asked: Request, turnEnd: number,
  * (claude-session-pool-plugin::REQ-005/AC-03).
  */
 async function look($: Engine, state: State): Promise<void> {
+  void recordPool($, state.pool);
   const { due, progressed } = await lookAtSubagents($, state.watch);
   await lookAtActivity($, state.activity, { turnRunning: state.isTurnRunning, subagentProgressed: progressed });
   if (due.length === 0 || state.isTurnRunning || state.request !== undefined || state.reporting) return;
@@ -264,13 +272,18 @@ async function startActivity($: Engine, state: State): Promise<void> {
   await writeActivity($, state.activity, state.isTurnRunning);
 }
 
-/** A tool call of the main conversation runs from the moment Claude Code tells of it until its answer is given. */
+/**
+ * A tool call of the main conversation runs from the moment Claude Code tells of it until its answer is given. A pool tool
+ * that names a slot has the slot's entry in the look record written anew once it has returned
+ * (claude-session-pool-monitor::REQ-004/AC-03).
+ */
 async function trackCall($: Engine, state: State, e: ToolCall, next: (e: ToolCall) => Promise<unknown>): Promise<unknown> {
   const call = callStarted($, state.activity, e.tool);
   try {
     return await answerCall($, state, e, next);
   } finally {
     callReturned($, state.activity, call);
+    if (POOL_TOOLS.includes(e.tool) && typeof e.name === "string") void recordPool($, state.pool, e.name);
   }
 }
 
@@ -314,6 +327,7 @@ export const register = (on: On): void => {
     reporting: false,
     watch: new Map(),
     activity: newActivity(),
+    pool: newPoolLook(),
   };
 
   on("classic.SessionStart", async ($, e, next) => {

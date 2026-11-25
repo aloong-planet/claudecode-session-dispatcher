@@ -49,7 +49,7 @@ async function recordPath($: ActivityEngine, sessionId: string): Promise<string 
 const isTime = (value: unknown): boolean => typeof value === "string" && TIME.test(value) && !Number.isNaN(Date.parse(value));
 
 /** Whether `value` is an activity record of `sessionId` in the form the spec states ("State files"). */
-function isRecordOf(value: unknown, sessionId: string): boolean {
+export function isRecordOf(value: unknown, sessionId: string): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   const { toolCall } = record;

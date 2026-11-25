@@ -55,3 +55,7 @@ _Avoid_: hook module, extension, in-process hook
 **Look**:
 One pass of the plugin's mod over what it watches in its session, made on a timer and not by the model. It is not a call to `status`, which a dispatcher session makes in a turn of its own.
 _Avoid_: poll, check, scan
+
+**Look record**:
+The file in which the plugin's mod in a dispatcher session states, for each slot of the pool, what the look that last wrote the slot's entry found. It is not the roster, which lists the slots, and not an activity record, which a worker session's mod writes of its own conversation.
+_Avoid_: pool state (a slot's state is what `status` finds now), snapshot

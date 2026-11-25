@@ -1,4 +1,6 @@
 import { realpathSync } from "node:fs";
+import { type LiveSession, type LookEntry, type Resolved, resolveSlot } from "../plugin/hooks/pool-rule.ts";
+import { LookRecordStore } from "./look-records.ts";
 import type { Clock, Processes, SessionEntry, SessionLister, TabRef, Terminal, TranscriptMark, Transcripts } from "./ports.ts";
 import { type Outcome, attempt, describeSession, messageOf } from "./report.ts";
 import { RosterStore, type Slot } from "./roster.ts";
@@ -36,13 +38,6 @@ export const LIMITS = {
 const DEFAULT_MODEL = "opus";
 const DEFAULT_PERMISSION_MODE = "auto";
 
-type LiveSession = SessionEntry & { pid: number };
-
-type Resolved =
-  | { state: "gone" }
-  | { state: "ambiguous"; count: number }
-  | { state: "live"; session: LiveSession };
-
 /** What a wait saw on one poll: the slot's state, or nothing because the sessions could not be listed. */
 type Observed = Resolved | { state: "unknown"; error: string };
 
@@ -53,6 +48,7 @@ export class Pool {
   private readonly deps: PoolDeps;
   private readonly directory: string;
   private readonly roster: RosterStore;
+  private readonly lookRecords: LookRecordStore;
   private readonly opening = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -60,6 +56,7 @@ export class Pool {
     this.deps = deps;
     this.directory = canonical(deps.directory);
     this.roster = new RosterStore(deps.rosterRoot, this.directory);
+    this.lookRecords = new LookRecordStore(deps.rosterRoot, this.directory);
   }
 
   open(args: OpenArgs): Promise<Outcome> {
@@ -87,7 +84,14 @@ export class Pool {
       const slots = this.roster.read();
       if (slots.length === 0) return "The roster has no slots.";
       const sessions = await this.deps.sessions.list();
-      return slots.map((slot) => `${slot.name}: ${this.describeResolved(this.resolveIn(sessions, slot.name))}`).join("\n");
+      const looked = this.lookRecords.entries();
+      return slots
+        .map((slot) => {
+          const resolved = this.resolveIn(sessions, slot.name);
+          const entry = looked.get(slot.name);
+          return `${slot.name}: ${resolved.state === "gone" && entry !== undefined ? describeLastSeen(entry) : this.describeResolved(resolved)}`;
+        })
+        .join("\n");
     });
   }
 
@@ -473,13 +477,7 @@ export class Pool {
   }
 
   private resolveIn(sessions: SessionEntry[], name: string): Resolved {
-    const matches = sessions.filter(
-      (session): session is LiveSession =>
-        session.kind === "interactive" && session.pid !== undefined && session.name === name && canonical(session.cwd) === this.directory,
-    );
-    if (matches.length === 0) return { state: "gone" };
-    if (matches.length > 1) return { state: "ambiguous", count: matches.length };
-    return { state: "live", session: matches[0]! };
+    return resolveSlot(sessions, name, this.directory, canonical);
   }
 
   private describeResolved(resolved: Resolved): string {
@@ -494,6 +492,11 @@ export class Pool {
     this.queue = result.catch(() => undefined);
     return result;
   }
+}
+
+/** A `gone` slot with an entry in the look record (claude-session-pool::US-005/AC-04): what the last look that found it live found. */
+function describeLastSeen(entry: LookEntry): string {
+  return `gone, last seen ${entry.state} at ${entry.seenAt}, session ${entry.sessionId}, whose conversation had ${entry.worked ? "work" : "no work"} in it`;
 }
 
 function quoted(text: string): string {
