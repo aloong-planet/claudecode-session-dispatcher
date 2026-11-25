@@ -14,7 +14,7 @@ A dispatcher session needs worker sessions that it can create, reset and close w
 4. Subagents of the dispatcher session. Rejected: their results return into its own context, and the owner has no window to watch one or take it over.
 5. tmux panes driven with `send-keys`. Rejected: it needs software that is not installed, and Terminal's scripting interface does the same job.
 6. The mod checking for clear orders once a second. Rejected by the owner on 2026-11-21: it makes about 3,600 checks an hour in every idle worker for no gain in speed.
-7. A cross-session message that the worker's mod answers with the clear. Rejected: the server cannot send one, so the dispatcher's mod would have to take the `clear` call and repeat the server's lookup, wait and confirmation in code that cannot import it.
+7. A cross-session message that the worker's mod answers with the clear. Rejected: the server cannot send one, so the dispatcher's mod would have to take the `clear` call and repeat the server's wait and confirmation in code that cannot import them.
 8. Typing `/clear` into every worker, as before. Rejected by the owner on 2026-11-21: it failed twice on a locked screen.
 9. Refusing to clear a worker without the plugin. Rejected: such a worker could not be cleared.
 10. A key file that the clear order must match, or the mod also refusing an order for the dispatcher session. Not adopted by the owner on 2026-11-22: neither stops a process of the same user, which could already type `/clear` into any tab.
