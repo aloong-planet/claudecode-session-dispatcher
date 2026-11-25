@@ -82,7 +82,7 @@ The session listing, typing, the transcript and the hosting tab are described in
 
 ### The mod's part
 
-- The mod holds at most one request for a session, in the memory of the session's process, and writes no file. A request records the session ID of the conversation it was made in; claude-session-pool-compact-self::US-001/AC-08 takes the conversation as cleared when the session has another ID at the moment the compaction is due.
+- The mod holds at most one request for a session, in the memory of the session's process, and writes no file for it. A request records the session ID of the conversation it was made in; claude-session-pool-compact-self::US-001/AC-08 takes the conversation as cleared when the session has another ID at the moment the compaction is due.
 - It takes a refusal of the compaction as caused by a turn in progress (claude-session-pool-compact-self::US-001/AC-06) when it has been told of a turn of the session that started and has not ended, or when the refusal's message says that a conversation compacts between turns.
 - It takes a refusal whose message ends in `Compaction canceled.` as the owner's cancellation (claude-session-pool-compact-self::US-001/AC-08).
 - Before it asks for the compaction, the mod reads the conversation's wake request and counts it only when the hook would: valid JSON in the form stated above, naming the conversation. A file it cannot read counts as absent.
