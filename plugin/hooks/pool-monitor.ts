@@ -87,6 +87,11 @@ const BLIND_LOOKS = 10;
 
 const FIRST_LINE = "Report of the pool monitor, written by the cc-session-pool plugin. It is not a message from the user. What it found:";
 const LAST_LINE = "Nothing was done to any slot. Each of these is reported once.";
+/**
+ * The form a tool's name must pass to be put into a report ("Text of a report"): narrower than what a session waits for, as
+ * no tool's name holds a space, `.` or `:`, and so a name cannot hold a sentence.
+ */
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 /** The most bytes that one read of a file gives a mod (claude-session-pool-monitor, "What a mod can read"). */
 const RANGE_BYTES = 4 * 1024 * 1024;
 const NEWLINE = 0x0a;
@@ -262,7 +267,7 @@ async function slotLines(slot: Slot, seen: SlotSight, at: number, loadedAt: numb
       const running =
         toolCall === undefined
           ? "No tool call of its own is running."
-          : `${PART.test(toolCall.tool) ? `Its tool call ${toolCall.tool}` : "A tool call of its own"} has been running for ${minutes(at - Date.parse(toolCall.startedAt))} minutes.`;
+          : `${TOOL_NAME.test(toolCall.tool) ? `Its tool call ${toolCall.tool}` : "A tool call of its own"} has been running for ${minutes(at - Date.parse(toolCall.startedAt))} minutes.`;
       lines.push({ text: `- ${name}: busy, and it made no progress for ${minutes(at - progressAt)} minutes. ${running}`, reported: () => (slot.stall = stall) });
     }
   }

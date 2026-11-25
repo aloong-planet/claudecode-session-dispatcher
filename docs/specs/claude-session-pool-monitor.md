@@ -22,7 +22,7 @@ As a dispatcher session, I am woken with a report when a slot stops, stalls, wai
 - claude-session-pool-monitor::US-001/AC-06: A slot is stalled at a look that finds it `busy` when its activity record says that the session last made progress 12 minutes or more before the look. It is due for a report at the first look that finds it stalled. The report states which tool call of the session has been running and for how long, or that none is running.
 - claude-session-pool-monitor::US-001/AC-07: A slot has stopped at a look that finds it `idle` when its activity record says that its last turn ended after the dispatcher session's mod was loaded and 5 minutes or more before the look. It is due for a report at the first look that finds it stopped, unless it has told the dispatcher session (claude-session-pool-monitor::REQ-002).
 - claude-session-pool-monitor::US-001/AC-08: A live slot is unrecorded at a look when it has no activity record that counts (claude-session-pool-monitor::REQ-001/AC-02). It is due for a report at the third look in a row that finds it so, and it is judged under neither claude-session-pool-monitor::US-001/AC-06 nor claude-session-pool-monitor::US-001/AC-07 while it is so.
-- claude-session-pool-monitor::US-001/AC-09: Each of these conditions is reported once ([claude-session-pool-plugin::REQ-006](claude-session-pool-plugin.md)). A change in what a `waiting` session waits for, in the number of sessions of an `ambiguous` slot, or of a slot's session ID makes a new condition, and so does a stall after the session made progress again and a stop after another turn. Nothing is reported when a condition ends.
+- claude-session-pool-monitor::US-001/AC-09: Each of these conditions is reported once ([claude-session-pool-plugin::REQ-006](claude-session-pool-plugin.md)). A change in what a `waiting` session waits for, in the number of sessions of an `ambiguous` slot, or of a slot's session ID makes a new condition, and so does a stall after the session made progress again and a stop after another turn. For an `ambiguous`, a `waiting` or an unrecorded slot, a look that judges the slot and does not find the condition ends it, and a later look that finds it again finds a new condition; a look that leaves the slot out for a pool tool, or that is passed over, ends none. Nothing is reported when a condition ends.
 
 ## Functional Requirements
 
@@ -80,7 +80,7 @@ Applies to: the looks, the reports, and the writes that claude-session-pool-moni
 
 ### Text of a report
 
-The report's text is the first line below, one line for each condition that is due, and the last line. `<name>` is a slot's name, `<names>` slot names separated by a comma and a space, and `<n>` and `<m>` whole numbers of minutes. From the session listing the mod puts into the text only what a session waits for, and from an activity record only the name of a tool, each only where it is 1 to 64 characters, each an ASCII letter, a digit, a space, `.`, `_`, `:` or `-`.
+The report's text is the first line below, one line for each condition that is due, and the last line. `<name>` is a slot's name, `<names>` slot names separated by a comma and a space, and `<n>` and `<m>` whole numbers of minutes. From the session listing the mod puts into the text only what a session waits for, where it is 1 to 64 characters, each an ASCII letter, a digit, a space, `.`, `_`, `:` or `-`, and from an activity record only the name of a tool, where it is 1 to 64 characters, each an ASCII letter, a digit, `_` or `-`.
 
 | Part | Text |
 |---|---|
