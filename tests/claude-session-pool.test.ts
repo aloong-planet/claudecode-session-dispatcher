@@ -19,7 +19,8 @@
  * typing: the server does not detect it, so there is nothing to assert. The dispatcher session ending while a
  * `compact` call waits: the wait dies with the server process. Driving either needs a real session and a real race.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileTranscripts } from "../src/adapters/transcripts.ts";
@@ -434,6 +435,78 @@ describe("status", () => {
     mac.addSession({ name: "w1", cwd: directory });
 
     expect((await pool.status()).text).toBe("w1: ambiguous, 2 sessions answer to this name");
+  });
+});
+
+describe("status, with the pool's look record", () => {
+  const SEEN_AT = "2026-11-22T02:59:00.000Z";
+  /** Writes the pool's look record by hand, in the form "Look records" documents, as the mod would have. */
+  function writeLookRecord(rosterRoot: string, directory: string, record: unknown) {
+    const key = createHash("sha256").update(directory).digest("hex").slice(0, 16);
+    mkdirSync(join(rosterRoot, "pool-states"), { recursive: true });
+    writeFileSync(join(rosterRoot, "pool-states", `${key}.json`), typeof record === "string" ? record : JSON.stringify(record));
+  }
+  /** A pool with the slots w1 (gone) and w2 (live), and a look record holding an entry for each. */
+  async function poolWithEntries(worked: boolean) {
+    const context = setup();
+    const { mac, pool, directory } = context;
+    const ended = mac.addSession({ name: "w1", cwd: directory });
+    const live = mac.addSession({ name: "w2", cwd: directory, status: "busy" });
+    await pool.adopt({ name: "w1" });
+    await pool.adopt({ name: "w2" });
+    mac.endSession(ended.pid!);
+    const real = realpathSync(directory);
+    const entries = [
+      { name: "w1", sessionId: ended.sessionId, state: "busy", seenAt: SEEN_AT, worked },
+      { name: "w2", sessionId: OTHER_SESSION, state: "idle", seenAt: SEEN_AT, worked: true },
+    ];
+    writeLookRecord(context.rosterRoot, real, { version: 1, directory: real, slots: entries });
+    return { ...context, ended, live, real, entries };
+  }
+
+  it.each([
+    ["work", true],
+    ["no work", false],
+  ])("states for a gone slot its entry's session ID, state and time, and that its conversation had %s in it", async (said, worked) => {
+    const { pool, ended, live } = await poolWithEntries(worked);
+
+    expect((await pool.status()).text).toBe(
+      [`w1: gone, last seen busy at ${SEEN_AT}, session ${ended.sessionId}, whose conversation had ${said} in it`, `w2: busy, session ${live.sessionId}`].join("\n"),
+    );
+  });
+
+  it("lists an ambiguous slot that has an entry as ambiguous alone", async () => {
+    const { mac, pool, directory } = await poolWithEntries(true);
+    mac.addSession({ name: "w2", cwd: directory });
+
+    expect((await pool.status()).text).toMatch(/\nw2: ambiguous, 2 sessions answer to this name$/);
+  });
+
+  it("lists a gone slot that has no entry as gone alone", async () => {
+    const { mac, pool, directory, rosterRoot } = setup();
+    const ended = mac.addSession({ name: "w1", cwd: directory });
+    await pool.adopt({ name: "w1" });
+    mac.endSession(ended.pid!);
+    const real = realpathSync(directory);
+    writeLookRecord(rosterRoot, real, { version: 1, directory: real, slots: [{ name: "w2", sessionId: OTHER_SESSION, state: "idle", seenAt: SEEN_AT, worked: true }] });
+
+    expect((await pool.status()).text).toBe("w1: gone");
+  });
+
+  it.each([
+    ["there is none", () => undefined],
+    ["it is not JSON", () => "{\"version\":1,"],
+    ["its version is not 1", (record: Record<string, unknown>) => ({ ...record, version: 2 })],
+    ["it belongs to another directory", (record: Record<string, unknown>) => ({ ...record, directory: "/elsewhere" })],
+    ["an entry's name is not a slot name", (record: { slots: object[] }) => ({ ...record, slots: [...record.slots, { ...record.slots[0], name: "-w3" }] })],
+    ["an entry's session ID is not in the form of one", (record: { slots: object[] }) => ({ ...record, slots: [...record.slots, { ...record.slots[0], name: "w3", sessionId: "s-1" }] })],
+  ])("lists a gone slot as gone alone when the look record cannot be used: %s", async (_, change) => {
+    const { pool, rosterRoot, real, entries, live } = await poolWithEntries(true);
+    const changed = change({ version: 1, directory: real, slots: entries } as never) as unknown;
+    if (changed === undefined) rmSync(join(rosterRoot, "pool-states"), { recursive: true });
+    else writeLookRecord(rosterRoot, real, changed);
+
+    expect((await pool.status()).text).toBe(`w1: gone\nw2: busy, session ${live.sessionId}`);
   });
 });
 
@@ -1484,6 +1557,22 @@ describe("the roster", () => {
       ],
     });
     expect(adopted.pid).not.toBe(mac.session("w1").pid);
+  });
+
+  // The key is computed without Node's modules, so that the plugin's mod names the same files; Node's digest is the oracle.
+  it.each([
+    ["an empty path", ""],
+    ["a path that fills one block but for the length", `/${"p".repeat(54)}`],
+    ["a path one byte longer, which takes a second block", `/${"p".repeat(55)}`],
+    ["a path of exactly one block", `/${"p".repeat(63)}`],
+    ["a path of several blocks", `/Users/someone/${"deep/".repeat(40)}project`],
+    ["a path with spaces, quotes and letters outside ASCII", `/Users/someone/the "pool" dir's 工作区/é`],
+  ])("names its file by the SHA-256 of the directory for %s", (_, directory) => {
+    const root = temporaryDirectory();
+
+    const store = new RosterStore(root, directory);
+
+    expect(store.path).toBe(join(root, "pools", `${createHash("sha256").update(directory).digest("hex").slice(0, 16)}.json`));
   });
 
   it("reads a roster file written by hand in the documented form", async () => {

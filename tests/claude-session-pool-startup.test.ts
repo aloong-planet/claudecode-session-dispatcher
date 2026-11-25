@@ -303,10 +303,10 @@ describe("the start-up command", () => {
     writeFileSync(join(project, `${SESSION}.jsonl`), records.map((record) => `${JSON.stringify(record)}\n`).join(""));
   }
 
-  /** A copy of the command and of the program it runs, in a checkout at `checkout`. */
+  /** A copy of the command and of the program it runs, with the plugin's files the program imports, in a checkout at `checkout`. */
   function checkoutAt(checkout: string): string {
     mkdirSync(checkout, { recursive: true });
-    for (const part of ["bin", "src"]) cpSync(join(repository, part), join(checkout, part), { recursive: true });
+    for (const part of ["bin", "src", "plugin"]) cpSync(join(repository, part), join(checkout, part), { recursive: true });
     return join(checkout, "bin", "claude-dispatcher");
   }
 

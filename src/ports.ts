@@ -1,13 +1,6 @@
-/** One entry of Claude Code's session listing (`claude agents --json`). */
-export type SessionEntry = {
-  kind: string;
-  cwd: string;
-  pid?: number;
-  name?: string;
-  sessionId?: string;
-  status?: string;
-  waitingFor?: string;
-};
+import type { SessionEntry } from "../plugin/hooks/pool-rule.ts";
+
+export type { SessionEntry };
 
 export interface SessionLister {
   list(): Promise<SessionEntry[]>;

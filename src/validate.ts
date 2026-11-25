@@ -1,7 +1,8 @@
+import { SLOT_NAME } from "../plugin/hooks/pool-rule.ts";
+
 /** A condition under which a tool declines to act, or a step it could not confirm. Its message is the tool's error text. */
 export class Refusal extends Error {}
 
-const SLOT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MODEL = /^[A-Za-z0-9._[\]-]{1,64}$/;
 const PERMISSION_MODES = ["auto", "acceptEdits", "default", "plan", "dontAsk"];
 
