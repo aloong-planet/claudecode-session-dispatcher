@@ -44,6 +44,10 @@ _Avoid_: follow-up, pending compaction
 What the plugin's hook leaves at every session start, by which the server knows that the plugin's hooks run in that session. It is not an entry in the session's transcript and not the declaration that makes Claude Code run the hook.
 _Avoid_: marker, hook log
 
+**Activity record**:
+The file in which the plugin's mod states its session's activity for the conversation the session holds, named after that conversation's session ID. It is not a hook record, which names the session's process, and not what a look reports.
+_Avoid_: heartbeat (it states more than that the session is alive), status file (`status` is a tool of the server)
+
 **Mod**:
 The plugin's hooks module: code of the plugin that Claude Code loads into a session's own process. It is not one of the plugin's hooks, which are commands that Claude Code starts as separate processes.
 _Avoid_: hook module, extension, in-process hook
