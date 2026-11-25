@@ -15,7 +15,6 @@
 
 import type { Sight, SlotSight } from "./pool-look.ts";
 import { SESSION_ID_FORM } from "./pool-rule.ts";
-import { PART } from "./subagent-watch.ts";
 
 export type MonitorEngine = {
   fs: {
@@ -87,10 +86,8 @@ const BLIND_LOOKS = 10;
 
 const FIRST_LINE = "Report of the pool monitor, written by the cc-session-pool plugin. It is not a message from the user. What it found:";
 const LAST_LINE = "Nothing was done to any slot. Each of these is reported once.";
-/**
- * The form a tool's name must pass to be put into a report ("Text of a report"): narrower than what a session waits for, as
- * no tool's name holds a space, `.` or `:`, and so a name cannot hold a sentence.
- */
+/** The forms that what a session waits for, and a tool's name, must pass to be put into a report ("Text of a report"). */
+const WAITING_FOR = /^[A-Za-z0-9 ._:-]{1,64}$/;
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 /** The most bytes that one read of a file gives a mod (claude-session-pool-monitor, "What a mod can read"). */
 const RANGE_BYTES = 4 * 1024 * 1024;
@@ -246,7 +243,7 @@ async function slotLines(slot: Slot, seen: SlotSight, at: number, loadedAt: numb
     run.looks += 1;
     slot.waiting = run;
     if (run.looks >= WAITING_LOOKS && !run.reported) {
-      const what = waitingFor !== undefined && PART.test(waitingFor) ? `waiting for ${waitingFor}` : "waiting on a prompt";
+      const what = waitingFor !== undefined && WAITING_FOR.test(waitingFor) ? `waiting for ${waitingFor}` : "waiting on a prompt";
       lines.push({ text: `- ${name}: ${what}.`, reported: () => (run.reported = true) });
     }
   } else slot.waiting = undefined;
