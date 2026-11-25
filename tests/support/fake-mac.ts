@@ -32,6 +32,8 @@ export class FakeMac {
 
   /** How long after its window opens a new session is listed as idle. `undefined`: it is listed busy and stays so. */
   startupMs: number | undefined = 4000;
+  /** The session ID a session started with `--resume` gets instead of the one it resumes. */
+  resumedUnder: string | undefined;
   /** What a typed `/clear` does. */
   clearEffect: "new-session-id" | "nothing" = "new-session-id";
   /** What a typed `/compact` does. */
@@ -370,7 +372,7 @@ export class FakeMac {
       cwd: launch.directory,
       name: option("-n"),
       // A resumed session keeps the session ID of the conversation it resumes.
-      sessionId: option("--resume") ?? this.newSessionId(),
+      sessionId: option("--resume") === undefined ? this.newSessionId() : (this.resumedUnder ?? option("--resume")),
       status: "idle",
       tty,
       model: option("--model"),

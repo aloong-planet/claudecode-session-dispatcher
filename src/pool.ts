@@ -194,7 +194,7 @@ export class Pool {
       const argv = ["claude", "-n", name, "--resume", entry.sessionId];
       if (startedWith.model !== undefined) argv.push("--model", startedWith.model);
       if (startedWith.permissionMode !== undefined) argv.push("--permission-mode", startedWith.permissionMode);
-      const session = await this.launch(name, argv, startedWith, true, false);
+      const session = await this.launch(name, argv, startedWith, true, false, entry.sessionId);
       const passed = [
         startedWith.model === undefined ? "no --model" : `--model ${startedWith.model}`,
         startedWith.permissionMode === undefined ? "no --permission-mode" : `--permission-mode ${startedWith.permissionMode}`,
@@ -264,23 +264,34 @@ export class Pool {
   /**
    * Opens a new window that runs `argv` in the pool directory for the slot `name`, waits until its session is idle and
    * records it in the roster with what it was started with; `keepsSlot` tells whether the slot stays in the roster when
-   * the session is not idle in time.
+   * the session is not idle in time. With `resumes`, only a session with that session ID is the one started
+   * (claude-session-pool::US-008/AC-01): one with another session ID answering to the name is neither waited for nor
+   * recorded.
    */
-  private async launch(name: string, argv: string[], startedWith: StartedWith, keepsSlot: boolean, recycling: boolean): Promise<LiveSession> {
+  private async launch(
+    name: string,
+    argv: string[],
+    startedWith: StartedWith,
+    keepsSlot: boolean,
+    recycling: boolean,
+    resumes?: string,
+  ): Promise<LiveSession> {
     const { windowId } = await this.exclusive(() => this.deps.terminal.open({ directory: this.directory, argv }));
     const deadline = this.deps.clock.now() + LIMITS.openReadyMs;
+    const started = (session: LiveSession) => resumes === undefined || session.sessionId === resumes;
     let seen: Observed;
     for (;;) {
       seen = await this.observe(name);
-      if (seen.state === "live" && seen.session.status === "idle") {
+      if (seen.state === "live" && seen.session.status === "idle" && started(seen.session)) {
         await this.recordOpened(name, seen.session.pid, startedWith);
         return seen.session;
       }
       if (this.deps.clock.now() >= deadline) break;
       await this.deps.clock.sleep(LIMITS.pollMs);
     }
+    const other = seen.state === "live" && !started(seen.session) ? seen.session : undefined;
     // A slot that stays in the roster must record the session just opened for it, or forget the one it recorded.
-    if (keepsSlot) await this.recordOpened(name, seen.state === "live" ? seen.session.pid : undefined, startedWith);
+    if (keepsSlot) await this.recordOpened(name, seen.state === "live" && !other ? seen.session.pid : undefined, startedWith);
     const visible = await this.deps.terminal
       .lastLines(windowId)
       .catch((error: unknown) => `(the window's contents could not be read: ${messageOf(error)})`);
@@ -290,8 +301,11 @@ export class Pool {
         ? `Its window was left open. "${name}" stays in the roster.`
         : `Its window was left open and "${name}" was not added to the roster.`;
     const listing = seen.state === "unknown" ? ` The sessions could not be listed: ${seen.error}` : "";
+    const notResumed = other
+      ? ` ${other.sessionId === undefined ? "A session with no session ID" : `Session ${other.sessionId}`} answers to "${name}", not session ${resumes}, which the look record names; the conversation was not resumed.`
+      : "";
     throw new Refusal(
-      `A window was opened for "${name}", but its session was not idle after ${LIMITS.openReadyMs / 1000} seconds. ${kept}${listing} The window shows:\n${quoted(visible)}`,
+      `A window was opened for "${name}", but its session was not idle after ${LIMITS.openReadyMs / 1000} seconds. ${kept}${notResumed}${listing} The window shows:\n${quoted(visible)}`,
     );
   }
 

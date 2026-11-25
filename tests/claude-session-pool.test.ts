@@ -1663,6 +1663,42 @@ describe("restore", () => {
     expect((await pool.status()).text).toBe(`w1: busy, session ${ended.w1}`);
   });
 
+  it("waits on while the session answering to the name has another session ID, and is done once it has the entry's", async () => {
+    const { mac, pool, ended, rosterPath } = await endedPool([{ name: "w1" }]);
+    mac.resumedUnder = OTHER_SESSION;
+    const calledAt = mac.now;
+    mac.at(20_000, () => (mac.session("w1").sessionId = ended.w1));
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.text).toMatch(new RegExp(`^w1: restored\\. Session ${ended.w1} is idle in a new window;`));
+    expect(mac.now - calledAt).toBeGreaterThanOrEqual(20_000);
+    expect(rosterSlots(rosterPath)).toEqual([expect.objectContaining({ name: "w1", pid: mac.session("w1").pid })]);
+  });
+
+  it.each([
+    ["another session ID", OTHER_SESSION, `Session ${OTHER_SESSION}`],
+    ["no session ID", undefined, "A session with no session ID"],
+  ])("names what answers instead, ends nothing and records no session, when only a session with %s answers at the limit", async (_, listedAs, named) => {
+    const { mac, pool, ended, rosterPath } = await endedPool([{ name: "w1" }]);
+    mac.resumedUnder = OTHER_SESSION;
+    const calledAt = mac.now;
+    mac.at(10_000, () => (mac.session("w1").sessionId = listedAs));
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.text).toContain(
+      `w1: not restored. A window was opened for "w1", but its session was not idle after 60 seconds. Its window was left open. "w1" stays in the roster. ${named} answers to "w1", not session ${ended.w1}, which the look record names; the conversation was not resumed. The window shows:`,
+    );
+    expect(mac.now - calledAt).toBe(60_000);
+    const other = mac.session("w1");
+    expect(mac.terminated).not.toContain(other.pid);
+    expect(mac.windowOf(other).open).toBe(true);
+    expect(rosterSlots(rosterPath)).toEqual([{ name: "w1", origin: "opened", model: "opus", permissionMode: "auto" }]);
+  });
+
   it("sends the session it starts nothing, and leaves no file for it", async () => {
     const { mac, pool, ended, standingOrders, stateRoot } = await endedPool([{ name: "w1" }], setup({ plugin: "hooks and mod" }));
 
