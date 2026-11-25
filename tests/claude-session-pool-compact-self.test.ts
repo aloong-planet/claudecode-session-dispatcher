@@ -72,7 +72,7 @@ function setup(options: Options = {}) {
   fakes.push(mac);
   mac.transcriptRoot = transcriptRoot;
   const wake = new WakeState(stateRoot);
-  if (options.hooksRun !== false) mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid) });
+  if (options.hooksRun !== false) mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid), now: Date.now });
   const session = mac.addSession({ name: "worker", cwd: directory, status: "busy", ...options.session });
   if (options.transcript !== false) mac.appendTurnRecord(session.sessionId!);
   mac.addSession({ name: "bystander", cwd: directory });
@@ -247,7 +247,7 @@ describe("the end of the turn in which compact_self was called", () => {
 describe("a conversation with a wake request that the server left", () => {
   /** The plugin's hook on PostCompact, which Claude Code runs as the mod's compaction finishes, before the mod hears that it has. */
   const hookAfterCompaction = (wake: WakeState) =>
-    runHook({ hook_event_name: "PostCompact", session_id: SESSION, trigger: "manual", compact_summary: "…" }, { state: wake, sessionPid: 4242, isAlive: () => true });
+    runHook({ hook_event_name: "PostCompact", session_id: SESSION, trigger: "manual", compact_summary: "…" }, { state: wake, sessionPid: 4242, isAlive: () => true, now: Date.now });
 
   it("is woken by the plugin's hook after the mod's compaction, and not by the mod as well", async () => {
     const { wake, calls, turnEnds, compactions, prompts } = await modSetup();

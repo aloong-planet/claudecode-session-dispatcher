@@ -8,8 +8,10 @@
  * it waits on a permission, on a subagent of its own or inside a long tool call. These were measured by hand on Claude Code
  * 2.1.327 (the ticket's delivery note) and are to be measured again when Claude Code changes how it lists agents.
  */
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { modSetup, type ListedAgent } from "./support/mod-engine.ts";
+import { SESSION } from "./support/sessions.ts";
 import { cleanUpTemporaryDirectories } from "./support/temporary.ts";
 
 afterEach(cleanUpTemporaryDirectories);
@@ -111,7 +113,7 @@ describe("a stall", () => {
 
 describe("the watch", () => {
   it("only reads what Claude Code lists of the subagents and the sizes of their transcripts, and reports to its own session (claude-session-pool-subagent-watch::CON-001)", async () => {
-    const { engineCalls, startSubagent, look, prompts } = await modSetup();
+    const { engineCalls, writes, home, startSubagent, look, prompts } = await modSetup();
     startSubagent(SUBAGENT);
     startSubagent("ac6e54f1181cbb956", { parentId: SUBAGENT });
     const atStart = engineCalls.length;
@@ -119,7 +121,11 @@ describe("the watch", () => {
     await look(14);
 
     expect(prompts).toHaveLength(1);
-    expect(new Set(engineCalls.slice(atStart))).toEqual(new Set(["agent.list", "session.info", "fs.list", "prompt.submit"]));
+    // Beside the watch's calls, a look makes those of the activity record (claude-session-pool-plugin::REQ-008/AC-01),
+    // which writes its own file alone.
+    const record = ["session.usage", "session.id", "env.get", "clock.now", "fs.write"];
+    expect(new Set(engineCalls.slice(atStart))).toEqual(new Set(["agent.list", "session.info", "fs.list", "prompt.submit", ...record]));
+    expect(new Set(writes)).toEqual(new Set([join(home, ".claude-session-pool", "activity", `${SESSION}.json`)]));
     expect(engineCalls.filter((call) => call === "prompt.submit")).toHaveLength(1);
   });
 });
