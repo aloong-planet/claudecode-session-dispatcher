@@ -27,8 +27,8 @@
 // at every look (activity.ts).
 //
 // In a dispatcher session it also writes the pool's look record at every look, with what the look found of each slot of
-// the roster, and writes a slot's entry anew when the session's call to `clear`, `open` or `recycle` that names the slot
-// has returned (pool-look.ts).
+// the roster, and writes a slot's entry anew when the session's call to `clear`, `open`, `recycle` or `restore` that names
+// the slot has returned, and the whole record when its call to `restore` without names has (pool-look.ts).
 //
 // The module imports nothing but the files of the plugin beside it, which Claude Code 2.1.327 loads with it: Claude Code
 // gives a mod neither Node's modules nor the repository's packages. The types
@@ -36,7 +36,7 @@
 // clear order uses (the watch paths of classic.SessionStart, classic.FileChanged and $.command.run) was measured on 2.1.327.
 
 import { callReturned, callStarted, loadActivity, lookAtActivity, newActivity, turnEnded, turnStarted, writeActivity, type Activity } from "./activity.ts";
-import { POOL_TOOLS, newPoolLook, recordPool, type PoolEngine, type PoolLook } from "./pool-look.ts";
+import { entriesWrittenAfter, newPoolLook, recordPool, type PoolEngine, type PoolLook } from "./pool-look.ts";
 import { lookAtSubagents, reportText, type Watch, type WatchEngine } from "./subagent-watch.ts";
 
 /** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
@@ -66,7 +66,7 @@ type Engine = WatchEngine & PoolEngine & {
   ui: { log: (text: string, options?: { to?: "transcript" | "debug" }) => void };
 };
 /** A call's arguments are fields of the event beside `tool` (measured on 2.1.327). */
-type ToolCall = { tool: string; agentId?: string; name?: unknown };
+type ToolCall = { tool: string; agentId?: string; name?: unknown; names?: unknown };
 type Hook<Input, Answer = unknown> = ($: Engine, e: Input, next: (e: Input) => Promise<Answer>) => Promise<unknown>;
 /** Why a turn ended: with the model's answer, by the user's interrupt, on a refusal by the model, or on an API error. */
 type TurnEnd = { agentId?: string; reason: "answer" | "aborted" | "refusal" | "error" };
@@ -283,7 +283,9 @@ async function trackCall($: Engine, state: State, e: ToolCall, next: (e: ToolCal
     return await answerCall($, state, e, next);
   } finally {
     callReturned($, state.activity, call);
-    if (POOL_TOOLS.includes(e.tool) && typeof e.name === "string") void recordPool($, state.pool, e.name);
+    const written = entriesWrittenAfter(e);
+    if (written === "every slot") void recordPool($, state.pool);
+    else if (written !== undefined) void recordPool($, state.pool, written);
   }
 }
 

@@ -369,7 +369,8 @@ export class FakeMac {
       pid: this.nextPid++,
       cwd: launch.directory,
       name: option("-n"),
-      sessionId: this.newSessionId(),
+      // A resumed session keeps the session ID of the conversation it resumes.
+      sessionId: option("--resume") ?? this.newSessionId(),
       status: "idle",
       tty,
       model: option("--model"),

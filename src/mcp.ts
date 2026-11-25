@@ -116,6 +116,22 @@ function registerPoolTools(server: McpServer, pool: Pool): void {
     async (args) => reply(await pool.recycle(args)),
   );
   server.registerTool(
+    "restore",
+    {
+      description:
+        "Bring back the conversations of slots whose sessions are gone: each in a new Terminal window under the slot's name, resuming the conversation the pool's look record names, when that conversation had work in it. Without names, acts on every such slot and names the other gone slots as not restored. A restored session starts idle and is sent nothing.",
+      inputSchema: {
+        names: z.array(z.string()).optional().describe("Slot names to restore, in order. Default: every gone slot whose conversation had work in it."),
+        model: z.string().optional().describe("Model for the restored sessions. Default: the one the roster records for the slot, else none is passed."),
+        permissionMode: z
+          .string()
+          .optional()
+          .describe("Permission mode for the restored sessions: auto, acceptEdits, default, plan or dontAsk. Default: the one the roster records for the slot, else none is passed."),
+      },
+    },
+    async (args) => reply(await pool.restore(args)),
+  );
+  server.registerTool(
     "release",
     {
       description: "Remove a slot from the roster without touching its session, for example to undo an adopt.",

@@ -400,8 +400,56 @@ describe("the entry of a slot a pool tool acted on", () => {
     });
   });
 
+  it("is written anew for each slot a call to restore lists, once it has returned, and the other entries stay", async () => {
+    const { mod, entry, lookRecord, real } = await dispatcher(["w1", "w2", "w3"]);
+    mod.listing.text = JSON.stringify([entry(501, "w1", W1, "busy"), entry(502, "w2", W2, "busy"), entry(503, "w3", W5A, "busy")]);
+    await mod.look();
+    const lookedAt = new Date(mod.time.now).toISOString();
+    const call = await mod.startsCall(tool("restore"), undefined, { names: ["w1", "w3"] });
+    mod.listing.text = JSON.stringify([entry(601, "w1", W1, "idle"), entry(502, "w2", W2, "idle"), entry(603, "w3", W5A, "idle")]);
+    mod.time.now += 20_000;
+
+    await call.returns();
+
+    const now = new Date(mod.time.now).toISOString();
+    expect(lookRecord()).toEqual({
+      version: 1,
+      directory: real,
+      slots: [
+        { name: "w1", sessionId: W1, state: "idle", seenAt: now, worked: false },
+        { name: "w2", sessionId: W2, state: "busy", seenAt: lookedAt, worked: false },
+        { name: "w3", sessionId: W5A, state: "idle", seenAt: now, worked: false },
+      ],
+    });
+  });
+
+  it("is written whole, as at a look, once a call to restore without names has returned", async () => {
+    const { mod, entry, lookRecord, real } = await dispatcher(["w1", "w2", "w3"]);
+    mod.listing.text = JSON.stringify([entry(501, "w1", W1, "busy"), entry(502, "w2", W2, "busy"), entry(503, "w3", W5A, "busy")]);
+    await mod.look();
+    const lookedAt = new Date(mod.time.now).toISOString();
+    mod.listing.text = JSON.stringify([entry(502, "w2", W2, "busy")]);
+    const call = await mod.startsCall(tool("restore"), undefined, {});
+    mod.listing.text = JSON.stringify([entry(601, "w1", W1, "idle"), entry(502, "w2", W2, "idle")]);
+    mod.time.now += 20_000;
+
+    await call.returns();
+
+    const now = new Date(mod.time.now).toISOString();
+    expect(lookRecord()).toEqual({
+      version: 1,
+      directory: real,
+      slots: [
+        { name: "w1", sessionId: W1, state: "idle", seenAt: now, worked: false },
+        { name: "w2", sessionId: W2, state: "idle", seenAt: now, worked: false },
+        { name: "w3", sessionId: W5A, state: "busy", seenAt: lookedAt, worked: false },
+      ],
+    });
+  });
+
   it.each([
     ["a subagent's call to clear", tool("clear"), "agent-1", { name: "w1" }],
+    ["a call to restore that lists no slot of the roster", tool("restore"), undefined, { names: ["w9"] }],
     ["a call to clear that names no slot of the roster", tool("clear"), undefined, { name: "w9" }],
     ["a call to open whose slot is not live and has no entry", tool("open"), undefined, { name: "w2" }],
     ["a call to status", tool("status"), undefined, {}],

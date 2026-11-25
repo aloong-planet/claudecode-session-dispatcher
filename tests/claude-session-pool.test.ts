@@ -9,7 +9,8 @@
  * mod's part of `clear` is covered at the end of this file, where it is handed a fake engine.
  *
  * Not covered here, because it needs the real programs: what `/clear` and `/compact` do inside Claude Code, that
- * Ctrl+C empties its input box, that Terminal puts the earlier window back in front, and that Claude Code's file watch
+ * `claude --resume` resumes the conversation under its own session ID (the fake assumes it, as measured for the fact
+ * "Resuming" of the spec), that Ctrl+C empties its input box, that Terminal puts the earlier window back in front, and that Claude Code's file watch
  * tells the mod of a clear order, which the mod then runs. The Terminal part is covered by `claude-session-pool.live.test.ts` when it
  * is enabled; the Claude Code part was checked by hand with real sessions on Claude Code 2.1.327, also with the screen
  * locked for up to five minutes (a longer lock was not checked). The Claude Code part is to be checked again when Claude
@@ -25,10 +26,12 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileTranscripts } from "../src/adapters/transcripts.ts";
 import { runHook } from "../src/hooks.ts";
+import { type LookEntry, type RosterSlot, type SessionEntry, judgeRestore } from "../plugin/hooks/pool-rule.ts";
 import { Pool } from "../src/pool.ts";
 import { RosterStore } from "../src/roster.ts";
 import { WakeState } from "../src/wake.ts";
 import { FakeMac } from "./support/fake-mac.ts";
+import { writeLookRecord } from "./support/look-record.ts";
 import { AFTER_CLEAR, modSetup, settle } from "./support/mod-engine.ts";
 import { OTHER_SESSION, SESSION } from "./support/sessions.ts";
 import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/temporary.ts";
@@ -267,6 +270,7 @@ describe("argument validation", () => {
         await pool.close({ name }),
         await pool.recycle({ name }),
         await pool.release({ name }),
+        await pool.restore({ names: [name] }),
       ];
 
       expect(outcomes.map((outcome) => outcome.ok)).toEqual(outcomes.map(() => false));
@@ -287,10 +291,12 @@ describe("argument validation", () => {
 
     const opened = await pool.open({ name: "w2", ...argument });
     const recycled = await pool.recycle({ name: "w1", ...argument });
+    const restored = await pool.restore({ ...argument });
 
-    expect([opened.ok, recycled.ok]).toEqual([false, false]);
+    expect([opened.ok, recycled.ok, restored.ok]).toEqual([false, false, false]);
     expect(opened.text).toContain(complaint);
     expect(recycled.text).toContain(complaint);
+    expect(restored.text).toContain(complaint);
     expect(mac.launches).toHaveLength(launchesBefore);
     expect(mac.terminated).toEqual([]);
   });
@@ -440,12 +446,6 @@ describe("status", () => {
 
 describe("status, with the pool's look record", () => {
   const SEEN_AT = "2026-11-22T02:59:00.000Z";
-  /** Writes the pool's look record by hand, in the form "Look records" documents, as the mod would have. */
-  function writeLookRecord(rosterRoot: string, directory: string, record: unknown) {
-    const key = createHash("sha256").update(directory).digest("hex").slice(0, 16);
-    mkdirSync(join(rosterRoot, "pool-states"), { recursive: true });
-    writeFileSync(join(rosterRoot, "pool-states", `${key}.json`), typeof record === "string" ? record : JSON.stringify(record));
-  }
   /** A pool with the slots w1 (gone) and w2 (live), and a look record holding an entry for each. */
   async function poolWithEntries(worked: boolean) {
     const context = setup();
@@ -1362,7 +1362,7 @@ describe("close", () => {
 
 describe("recycle", () => {
   it("replaces the slot's session with a new process and a new conversation under the same name", async () => {
-    const { mac, pool } = setup();
+    const { mac, pool, rosterRoot, directory } = setup();
     await pool.open({ name: "w1" });
     const old = { ...mac.session("w1") };
     const oldWindow = mac.windowOf(mac.session("w1"));
@@ -1376,6 +1376,7 @@ describe("recycle", () => {
     expect(fresh.pid).not.toBe(old.pid);
     expect(fresh.sessionId).not.toBe(old.sessionId);
     expect([fresh.model, fresh.permissionMode]).toEqual(["sonnet", "plan"]);
+    expect(new RosterStore(rosterRoot, directory).read()).toEqual([{ name: "w1", origin: "opened", pid: fresh.pid, model: "sonnet", permissionMode: "plan" }]);
     expect((await pool.status()).text).toBe(`w1: idle, session ${fresh.sessionId}`);
   });
 
@@ -1463,6 +1464,420 @@ describe("recycle", () => {
   });
 });
 
+describe("restore", () => {
+  const SEEN_AT = "2026-11-22T02:59:00.000Z";
+  type Ended = { name: string; worked?: boolean; entry?: boolean; model?: string; permissionMode?: string };
+  /**
+   * A pool whose slots the server opened, each with a turn in its transcript, whose sessions then all ended, as when the
+   * Mac restarts; the look record holds an entry for each slot, written while it was busy, unless `entry` is false.
+   */
+  async function endedPool(slots: Ended[], context = setup()) {
+    const { mac, pool, directory, rosterRoot } = context;
+    const ended: Record<string, string> = {};
+    for (const { name, model, permissionMode } of slots) {
+      await pool.open({ name, model, permissionMode });
+      ended[name] = mac.session(name).sessionId!;
+      mac.appendTurnRecord(ended[name]);
+    }
+    for (const { name } of slots) mac.endSession(mac.session(name).pid!);
+    const entries = slots
+      .filter(({ entry }) => entry !== false)
+      .map(({ name, worked }) => ({ name, sessionId: ended[name], state: "busy", seenAt: SEEN_AT, worked: worked ?? true }));
+    writeLookRecord(rosterRoot, directory, { version: 1, directory, slots: entries });
+    const rosterPath = new RosterStore(rosterRoot, directory).path;
+    return { ...context, ended, rosterPath, launchesBefore: mac.launches.length };
+  }
+  const rosterSlots = (path: string) => (JSON.parse(readFileSync(path, "utf8")) as { slots: unknown[] }).slots;
+
+  it("resumes the entry's conversation in a new window under the slot's name in the pool directory, and waits until it is idle", async () => {
+    const { mac, pool, directory, ended, rosterPath } = await endedPool([{ name: "w1" }]);
+    const calledAt = mac.now;
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    const resumed = mac.session("w1");
+    expect(outcome).toEqual({
+      ok: true,
+      text: `w1: restored. Session ${ended.w1} is idle in a new window; the look record last saw it busy at ${SEEN_AT}. Passed --model opus and --permission-mode auto.`,
+    });
+    expect(mac.launches.at(-1)).toEqual({ directory, argv: ["claude", "-n", "w1", "--resume", ended.w1, "--model", "opus", "--permission-mode", "auto"] });
+    expect(mac.now - calledAt).toBeGreaterThanOrEqual(4000);
+    expect(rosterSlots(rosterPath)).toEqual([{ name: "w1", origin: "opened", pid: resumed.pid, model: "opus", permissionMode: "auto" }]);
+    expect((await pool.status()).text).toBe(`w1: idle, session ${ended.w1}`);
+  });
+
+  it.each([
+    ["the arguments where they are given", {}, { model: "sonnet", permissionMode: "plan" }, ["sonnet", "plan"]],
+    ["what the roster records for the slot", { model: "sonnet", permissionMode: "plan" }, {}, ["sonnet", "plan"]],
+    ["an argument for one and what the roster records for the other", { model: "sonnet", permissionMode: "plan" }, { permissionMode: "acceptEdits" }, ["sonnet", "acceptEdits"]],
+  ])("starts the session with %s, names them and records them", async (_, opened, args, [model, permissionMode]) => {
+    const { mac, pool, ended, rosterPath } = await endedPool([{ name: "w1", ...opened }]);
+
+    const outcome = await pool.restore({ names: ["w1"], ...args });
+
+    expect(mac.launches.at(-1)!.argv).toEqual(["claude", "-n", "w1", "--resume", ended.w1, "--model", model, "--permission-mode", permissionMode]);
+    expect(outcome.text).toMatch(new RegExp(`Passed --model ${model} and --permission-mode ${permissionMode}\\.$`));
+    expect(rosterSlots(rosterPath)).toEqual([{ name: "w1", origin: "opened", pid: mac.session("w1").pid, model, permissionMode }]);
+  });
+
+  it("passes no model and no permission mode for an adopted slot, and says so", async () => {
+    const context = setup();
+    const { mac, pool, directory, rosterRoot } = context;
+    const adopted = mac.addSession({ name: "w1", cwd: directory });
+    await pool.adopt({ name: "w1" });
+    mac.appendTurnRecord(adopted.sessionId!);
+    mac.endSession(adopted.pid!);
+    writeLookRecord(rosterRoot, directory, { version: 1, directory, slots: [{ name: "w1", sessionId: adopted.sessionId, state: "idle", seenAt: SEEN_AT, worked: true }] });
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    expect(mac.launches).toEqual([{ directory, argv: ["claude", "-n", "w1", "--resume", adopted.sessionId] }]);
+    expect(outcome.text).toMatch(/Passed no --model and no --permission-mode\. Claude Code chose what was not passed\.$/);
+    expect(rosterSlots(new RosterStore(rosterRoot, directory).path)).toEqual([{ name: "w1", origin: "opened", pid: mac.session("w1").pid }]);
+  });
+
+  it("without names, acts on every gone slot whose conversation had work in it, in the roster's order, and names the other gone slots", async () => {
+    const { mac, pool, ended, launchesBefore } = await endedPool([
+      { name: "w1" },
+      { name: "w2", worked: false },
+      { name: "w3" },
+      { name: "w4", entry: false },
+    ]);
+    await pool.open({ name: "w5" });
+
+    const outcome = await pool.restore({});
+
+    expect(mac.launches.slice(launchesBefore + 1).map((launch) => launch.argv[4])).toEqual([ended.w1, ended.w3]);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.text.split("\n")).toEqual([
+      expect.stringMatching(/^w1: restored\. /),
+      `w2: not restored. The look record says that the conversation of "w2" (session ${ended.w2}) had no work in it; nothing was opened. open starts a new session under the name.`,
+      expect.stringMatching(/^w3: restored\. /),
+      'w4: not restored. The look record has no entry for "w4"; nothing was opened.',
+    ]);
+  });
+
+  it("acts on each name it lists, past one that is refused, and states every outcome", async () => {
+    const { mac, pool, ended, launchesBefore } = await endedPool([{ name: "w1" }, { name: "w3" }]);
+
+    const outcome = await pool.restore({ names: ["w1", "nope", "w3"] });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.text.split("\n")).toEqual([
+      expect.stringMatching(/^w1: restored\. /),
+      'nope: not restored. "nope" is not a slot in this pool\'s roster; nothing was done.',
+      expect.stringMatching(/^w3: restored\. /),
+    ]);
+    expect(mac.launches.slice(launchesBefore).map((launch) => launch.argv[4])).toEqual([ended.w1, ended.w3]);
+  });
+
+  type Context = Awaited<ReturnType<typeof endedPool>>;
+  it.each<[string, Ended, (context: Context) => string, string?]>([
+    ["the name is not a slot", { name: "w1" }, ({ mac, directory }) => {
+      mac.addSession({ name: "stranger", cwd: directory });
+      return '"stranger" is not a slot in this pool\'s roster; nothing was done.';
+    }, "stranger"],
+    ["the slot is not gone, stating its state", { name: "w1" }, ({ mac, directory }) => {
+      const live = mac.addSession({ name: "w1", cwd: directory, status: "busy" });
+      return `The slot "w1" is busy, session ${live.sessionId}, not gone; nothing was opened.`;
+    }],
+    ["the look record has no entry for the slot", { name: "w1", entry: false }, () => 'The look record has no entry for "w1"; nothing was opened.'],
+    ["the entry says the conversation had no work in it, saying that open starts a new session", { name: "w1", worked: false }, ({ ended }) =>
+      `The look record says that the conversation of "w1" (session ${ended.w1}) had no work in it; nothing was opened. open starts a new session under the name.`],
+    ["the transcript of the entry's session cannot be found", { name: "w1" }, ({ home, ended }) => {
+      rmSync(join(home, "transcripts"), { recursive: true });
+      return `The transcript of session ${ended.w1}, which the look record names for "w1", cannot be found; nothing was opened.`;
+    }],
+    ["a live session in another directory answers to the name", { name: "w1" }, ({ mac, elsewhere }) => {
+      const taken = mac.addSession({ name: "w1", cwd: elsewhere });
+      return `A live session already answers to "w1" (pid ${taken.pid}, in ${elsewhere}); nothing was opened.`;
+    }],
+    ["a live session holds the entry's conversation", { name: "w1" }, ({ mac, elsewhere, ended }) => {
+      const holder = mac.addSession({ name: "other", cwd: elsewhere, sessionId: ended.w1 });
+      return `Session ${ended.w1}, which the look record names for "w1", is already held by a live session (pid ${holder.pid}, named "other", in ${elsewhere}); nothing was opened.`;
+    }],
+  ])("refuses a name, opens nothing and leaves the roster as it was when %s", async (_, slot, arrange, name = "w1") => {
+    const context = await endedPool([slot]);
+    const { mac, pool, rosterPath, launchesBefore } = context;
+    const expected = arrange(context);
+    const roster = readFileSync(rosterPath, "utf8");
+
+    const outcome = await pool.restore({ names: [name] });
+
+    expect(outcome).toEqual({ ok: false, text: `${name}: not restored. ${expected}` });
+    expect(mac.launches).toHaveLength(launchesBefore);
+    expect(readFileSync(rosterPath, "utf8")).toBe(roster);
+  });
+
+  it.each([
+    ["there is none", () => undefined],
+    ["it is not JSON", () => '{"version":1,'],
+    ["its version is not 1", (record: Record<string, unknown>) => ({ ...record, version: 2 })],
+    ["it belongs to another directory", (record: Record<string, unknown>) => ({ ...record, directory: "/elsewhere" })],
+    ["an entry's session ID is not in the form of one", (record: { slots: object[] }) => ({ ...record, slots: [{ ...record.slots[0], sessionId: "--resume; rm -rf ~" }] })],
+  ])("refuses every slot when the look record cannot be used: %s", async (_, change) => {
+    const { mac, pool, directory, rosterRoot, ended, launchesBefore } = await endedPool([{ name: "w1" }, { name: "w2" }]);
+    const record = { version: 1, directory, slots: ["w1", "w2"].map((name) => ({ name, sessionId: ended[name], state: "busy", seenAt: SEEN_AT, worked: true })) };
+    const changed = change(record) as unknown;
+    if (changed === undefined) rmSync(join(rosterRoot, "pool-states"), { recursive: true });
+    else writeLookRecord(rosterRoot, directory, changed);
+
+    const outcome = await pool.restore({});
+
+    const missing = (name: string) => `${name}: not restored. The pool has no look record (${join(rosterRoot, "pool-states")}/`;
+    expect(outcome.ok).toBe(false);
+    expect(outcome.text.split("\n").map((line) => line.slice(0, missing("w1").length))).toEqual([missing("w1"), missing("w2")]);
+    expect(mac.launches).toHaveLength(launchesBefore);
+  });
+
+  it("leaves the window open and the slot in the roster, and quotes the window, when the resumed session is not idle in 60 seconds", async () => {
+    const { mac, pool, ended } = await endedPool([{ name: "w1" }]);
+    mac.startupMs = undefined;
+    const calledAt = mac.now;
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.text).toContain('w1: not restored. A window was opened for "w1", but its session was not idle after 60 seconds. Its window was left open. "w1" stays in the roster.');
+    expect(outcome.text).toContain("> Do you trust the files in this folder?");
+    expect(mac.now - calledAt).toBe(60_000);
+    expect(mac.windowOf(mac.session("w1")).open).toBe(true);
+    expect((await pool.status()).text).toBe(`w1: busy, session ${ended.w1}`);
+  });
+
+  it("sends the session it starts nothing, and leaves no file for it", async () => {
+    const { mac, pool, ended, standingOrders, stateRoot } = await endedPool([{ name: "w1" }], setup({ plugin: "hooks and mod" }));
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    expect(outcome.ok).toBe(true);
+    expect(mac.typed).toEqual([]);
+    expect(standingOrders()).toEqual([]);
+    expect(new WakeState(stateRoot).wakeRequestedAt(ended.w1!)).toBeUndefined();
+  });
+
+  it("refuses the dispatcher session's own name as not a slot, and opens nothing", async () => {
+    const { mac, pool, directory } = setup();
+    mac.addSession({ name: "lead", cwd: directory, pid: DISPATCHER_PID });
+
+    const outcome = await pool.restore({ names: ["lead"] });
+
+    expect(outcome).toEqual({ ok: false, text: 'lead: not restored. "lead" is not a slot in this pool\'s roster; nothing was done.' });
+    expect(mac.launches).toEqual([]);
+  });
+
+  it("returns Terminal's own error and leaves the roster as it was when Terminal cannot be scripted", async () => {
+    const { mac, pool, rosterPath } = await endedPool([{ name: "w1" }]);
+    const roster = readFileSync(rosterPath, "utf8");
+    mac.terminalFailure = "Not authorized to send Apple events to Terminal. (-1743)";
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    expect(outcome).toEqual({ ok: false, text: "w1: not restored. Not authorized to send Apple events to Terminal. (-1743)" });
+    expect(readFileSync(rosterPath, "utf8")).toBe(roster);
+  });
+
+  it("resumes the conversation the entry names when the owner cleared the session after the last look", async () => {
+    const context = setup();
+    const { mac, pool, directory, rosterRoot } = context;
+    await pool.open({ name: "w1" });
+    const looked = mac.session("w1").sessionId!;
+    mac.appendTurnRecord(looked);
+    writeLookRecord(rosterRoot, directory, { version: 1, directory, slots: [{ name: "w1", sessionId: looked, state: "idle", seenAt: SEEN_AT, worked: true }] });
+    mac.session("w1").sessionId = OTHER_SESSION;
+    mac.endSession(mac.session("w1").pid!);
+
+    await pool.restore({ names: ["w1"] });
+
+    expect(mac.launches.at(-1)!.argv.slice(3, 5)).toEqual(["--resume", looked]);
+  });
+
+  it.each([
+    ["a permission mode that may not be passed", { permissionMode: "bypassPermissions" }, "is not an allowed permission mode", { permissionMode: "auto" }],
+    ["a model out of form", { model: "opus; touch ~/pwned" }, "is not a valid model", { model: "opus" }],
+  ])("passes to no command line %s that the roster records, unless an argument replaces it", async (_, recorded, complaint, argument) => {
+    const { mac, pool, rosterPath, launchesBefore } = await endedPool([{ name: "w1" }]);
+    const roster = JSON.parse(readFileSync(rosterPath, "utf8")) as { slots: object[] };
+    writeFileSync(rosterPath, JSON.stringify({ ...roster, slots: [{ ...roster.slots[0], ...recorded }] }));
+
+    const refused = await pool.restore({ names: ["w1"] });
+
+    expect(refused.ok).toBe(false);
+    expect(refused.text).toContain(complaint);
+    expect(refused.text).toContain("Nothing was opened; pass model and permissionMode to start it with others.");
+    expect(mac.launches).toHaveLength(launchesBefore);
+
+    const replaced = await pool.restore({ names: ["w1"], ...argument });
+
+    expect(replaced.ok).toBe(true);
+    expect(mac.launches.at(-1)!.argv).toEqual(["claude", "-n", "w1", "--resume", expect.any(String), "--model", "opus", "--permission-mode", "auto"]);
+  });
+
+  it("starts the session in a pool directory whose path holds a space and quote characters, as that exact path", async () => {
+    const context = setup();
+    const directory = join(context.home, `the "pool" dir's`);
+    mkdirSync(directory);
+    const { mac, pool } = await endedPool([{ name: "w1" }], { ...context, pool: context.poolIn(directory), directory });
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    expect(outcome.ok).toBe(true);
+    expect(mac.launches.at(-1)!.directory).toBe(directory);
+  });
+
+  describe("after a recycle whose open step failed", () => {
+    /**
+     * A live slot w1 whose conversation had work in it, as the look record says, recycled while `breakOpen` keeps the new
+     * session from opening; what `breakOpen` returns undoes that afterwards.
+     */
+    async function recycledPool(breakOpen: (context: ReturnType<typeof setup>) => () => void, endFirst = false) {
+      const context = setup();
+      const { mac, pool, directory, rosterRoot } = context;
+      await pool.open({ name: "w1" });
+      const conversation = mac.session("w1").sessionId!;
+      mac.appendTurnRecord(conversation);
+      writeLookRecord(rosterRoot, directory, { version: 1, directory, slots: [{ name: "w1", sessionId: conversation, state: "idle", seenAt: SEEN_AT, worked: true }] });
+      if (endFirst) mac.endSession(mac.session("w1").pid!);
+      const undo = breakOpen(context);
+      const recycled = await pool.recycle({ name: "w1" });
+      undo();
+      const rosterPath = new RosterStore(rosterRoot, directory).path;
+      return { ...context, conversation, recycled, rosterPath, launchesBefore: mac.launches.length };
+    }
+    const failOpen = ({ mac }: ReturnType<typeof setup>) => {
+      mac.openFailure = "Terminal got an error: AppleEvent timed out. (-1712)";
+      return () => (mac.openFailure = undefined);
+    };
+    const takeName = ({ mac, elsewhere }: ReturnType<typeof setup>) => {
+      const taken = mac.addSession({ name: "w1", cwd: elsewhere });
+      return () => mac.endSession(taken.pid!);
+    };
+
+    it.each([
+      ["no window could be opened", failOpen],
+      ["a live session elsewhere answers to the name", takeName],
+    ])("refuses to resume the conversation recycle ended, when %s, and says that open starts a new session", async (_, breakOpen) => {
+      const { mac, pool, conversation, recycled, rosterPath, launchesBefore } = await recycledPool(breakOpen);
+      const roster = readFileSync(rosterPath, "utf8");
+
+      const outcome = await pool.restore({ names: ["w1"] });
+
+      expect(recycled.ok).toBe(false);
+      expect(rosterSlots(rosterPath)).toEqual([expect.objectContaining({ name: "w1", endedSessionId: conversation })]);
+      expect(outcome).toEqual({
+        ok: false,
+        text: `w1: not restored. Session ${conversation}, which the look record names for "w1", is the one recycle ended for it; nothing was opened. open starts a new session under the name.`,
+      });
+      expect(mac.launches).toHaveLength(launchesBefore);
+      expect(readFileSync(rosterPath, "utf8")).toBe(roster);
+    });
+
+    it("names such a slot as not restored when restore is called without names", async () => {
+      const { mac, pool, conversation, launchesBefore } = await recycledPool(failOpen);
+
+      const outcome = await pool.restore({});
+
+      expect(outcome).toEqual({
+        ok: true,
+        text: `w1: not restored. Session ${conversation}, which the look record names for "w1", is the one recycle ended for it; nothing was opened. open starts a new session under the name.`,
+      });
+      expect(mac.launches).toHaveLength(launchesBefore);
+    });
+
+    it("forgets the ended conversation once open records a new session for the slot", async () => {
+      const { mac, pool, rosterPath } = await recycledPool(failOpen);
+
+      await pool.open({ name: "w1" });
+
+      expect(rosterSlots(rosterPath)).toEqual([{ name: "w1", origin: "opened", pid: mac.session("w1").pid, model: "opus", permissionMode: "auto" }]);
+    });
+
+    it.each([
+      ["the listing gave the ended session no session ID", (context: ReturnType<typeof setup>) => {
+        context.mac.session("w1").sessionId = undefined;
+        return failOpen(context);
+      }, false],
+      ["the slot was already gone, so recycle ended no session", failOpen, true],
+    ])("resumes the entry's conversation when %s", async (_, breakOpen, endFirst) => {
+      const { mac, pool, conversation, rosterPath } = await recycledPool(breakOpen, endFirst);
+
+      const outcome = await pool.restore({ names: ["w1"] });
+
+      expect(rosterSlots(rosterPath)).toEqual([expect.objectContaining({ name: "w1" })]);
+      expect(outcome.ok).toBe(true);
+      expect(mac.launches.at(-1)!.argv.slice(3, 5)).toEqual(["--resume", conversation]);
+    });
+  });
+
+  it("opens one window when an open and a restore of the same slot arrive together, and refuses the other call", async () => {
+    const { mac, pool, launchesBefore } = await endedPool([{ name: "w1" }]);
+
+    const [opened, restored] = await Promise.all([pool.open({ name: "w1" }), pool.restore({ names: ["w1"] })]);
+
+    expect(mac.launches).toHaveLength(launchesBefore + 1);
+    expect([opened.ok, restored.ok]).toContain(false);
+    expect([opened.text, restored.text].join("\n")).toMatch(/Another call is already opening "w1"; nothing was opened\./);
+  });
+});
+
+// The rule alone: which slot `restore` acts on, and why it refuses one (claude-session-pool::US-008/AC-04). The tool is driven below.
+describe("which slot restore acts on", () => {
+  const POOL = "/pools/fixture/project";
+  const same = (path: string) => path;
+  const slot: RosterSlot = { name: "w1", origin: "opened", pid: 5000, model: "opus", permissionMode: "auto" };
+  const worked: LookEntry = { name: "w1", sessionId: SESSION, state: "busy", seenAt: "2026-11-22T02:59:00.000Z", worked: true };
+  const live = (overrides: Partial<SessionEntry>): SessionEntry => ({ kind: "interactive", cwd: POOL, pid: 6000, name: "w1", sessionId: OTHER_SESSION, status: "idle", ...overrides });
+
+  it("resumes the conversation of a gone slot whose entry says it had work in it", () => {
+    expect(judgeRestore(slot, [live({ name: "w2" })], POOL, same, [worked])).toEqual({ verdict: "restore", entry: worked });
+  });
+
+  it.each([
+    ["live", [live({})], "live"],
+    ["ambiguous", [live({}), live({ pid: 6001 })], "ambiguous"],
+  ])("refuses a slot that is %s, with its state", (_, sessions, state) => {
+    const judgement = judgeRestore(slot, sessions, POOL, same, [worked]);
+
+    expect(judgement.verdict).toBe("not gone");
+    expect(judgement.verdict === "not gone" && judgement.resolved.state).toBe(state);
+  });
+
+  it.each([
+    ["in another directory", live({ cwd: "/elsewhere" })],
+    ["of another kind in the pool directory", live({ kind: "background" })],
+  ])("refuses a gone slot whose name a live session %s answers to, naming that session", (_, taken) => {
+    expect(judgeRestore(slot, [taken], POOL, same, [worked])).toEqual({ verdict: "name taken", session: taken });
+  });
+
+  it("refuses every slot when the pool has no look record", () => {
+    expect(judgeRestore(slot, [], POOL, same, undefined)).toEqual({ verdict: "no look record" });
+  });
+
+  it("refuses a slot that has no entry", () => {
+    expect(judgeRestore(slot, [], POOL, same, [{ ...worked, name: "w2" }])).toEqual({ verdict: "no entry" });
+  });
+
+  it("refuses a slot whose entry says its conversation had no work in it", () => {
+    const cleared = { ...worked, worked: false };
+
+    expect(judgeRestore(slot, [], POOL, same, [cleared])).toEqual({ verdict: "no work", entry: cleared });
+  });
+
+  it("refuses a slot whose entry names the conversation that recycle ended for it", () => {
+    expect(judgeRestore({ ...slot, endedSessionId: SESSION }, [], POOL, same, [worked])).toEqual({ verdict: "ended by recycle", entry: worked });
+  });
+
+  it("resumes the entry's conversation when recycle ended another one for the slot", () => {
+    expect(judgeRestore({ ...slot, endedSessionId: OTHER_SESSION }, [], POOL, same, [worked]).verdict).toBe("restore");
+  });
+
+  it("refuses a slot whose entry's conversation a live session already holds, naming that session", () => {
+    const holder = live({ name: "other", cwd: "/elsewhere", sessionId: SESSION });
+
+    expect(judgeRestore(slot, [holder], POOL, same, [worked])).toEqual({ verdict: "conversation held", entry: worked, session: holder });
+  });
+});
+
 describe("release", () => {
   it("removes a live slot from the roster and leaves its session untouched", async () => {
     const { mac, pool, directory } = setup();
@@ -1544,6 +1959,7 @@ describe("the roster", () => {
     const adopted = mac.addSession({ name: "by-hand", cwd: "/pools/fixture/project" });
 
     await pool.open({ name: "w1" });
+    await pool.init({ names: ["w2"], model: "sonnet", permissionMode: "plan" });
     await pool.adopt({ name: "by-hand" });
 
     // sha256("/pools/fixture/project") starts with cd19260131af8dd8; computed with `printf %s … | shasum -a 256`.
@@ -1552,7 +1968,8 @@ describe("the roster", () => {
       version: 1,
       directory: "/pools/fixture/project",
       slots: [
-        { name: "w1", origin: "opened", pid: mac.session("w1").pid },
+        { name: "w1", origin: "opened", pid: mac.session("w1").pid, model: "opus", permissionMode: "auto" },
+        { name: "w2", origin: "opened", pid: mac.session("w2").pid, model: "sonnet", permissionMode: "plan" },
         { name: "by-hand", origin: "adopted" },
       ],
     });
@@ -1584,9 +2001,15 @@ describe("the roster", () => {
       '{"version":1,"directory":"/pools/fixture/project","slots":[{"name":"w1","origin":"opened","pid":4711},{"name":"w2","origin":"adopted"}]}',
     );
 
-    const status = await poolIn("/pools/fixture/project").status();
+    const pool = poolIn("/pools/fixture/project");
+    const status = await pool.status();
+    const released = await pool.release({ name: "w2" });
+    const closed = await pool.close({ name: "w1" });
 
     expect(status.text).toBe(`w1: idle, session ${session.sessionId}\nw2: gone`);
+    expect([released.ok, closed.ok]).toEqual([true, true]);
+    expect(mac.terminated).toEqual([session.pid]);
+    expect((await pool.status()).text).toBe(NO_SLOTS);
   });
 
   it("is separate for each pool directory, and each pool opens sessions in its own directory", async () => {
@@ -1609,6 +2032,10 @@ describe("the roster", () => {
       damage: "holds a slot in an unexpected form",
       content: (directory: string) => JSON.stringify({ version: 1, directory, slots: [{ name: "w1", origin: "opened", pid: "4711" }] }),
     },
+    {
+      damage: "holds a slot whose recorded model is not text",
+      content: (directory: string) => JSON.stringify({ version: 1, directory, slots: [{ name: "w1", origin: "opened", pid: 4711, model: ["opus"] }] }),
+    },
   ])("makes every tool refuse and stays unchanged when its file $damage", async ({ content }) => {
     const { mac, pool, directory, rosterRoot } = setup();
     mac.addSession({ name: "w1", cwd: directory });
@@ -1627,6 +2054,8 @@ describe("the roster", () => {
       await pool.close({ name: "w1" }),
       await pool.recycle({ name: "w1" }),
       await pool.release({ name: "w1" }),
+      await pool.restore({ names: ["w1"] }),
+      await pool.restore({}),
     ];
 
     for (const outcome of outcomes) {

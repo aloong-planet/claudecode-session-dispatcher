@@ -5,7 +5,7 @@
 - **Every session gets the tool `compact_self`.** A session uses it to compact its own conversation, and is woken afterwards so that it carries on, without anyone typing `/compact` or telling it to go on.
 - **Every session in which the plugin's mod runs gets the tool `context_usage`.** A session uses it to learn the size of its own context, as Claude Code's status line has it. Where Claude Code refuses the mod's tool, as it does in a session started with `--tools ""`, the session goes without it, and the reason is in Claude Code's debug log (`claude --debug`).
 - **Every interactive session in which the plugin's mod runs is told of a stuck subagent.** Once a minute the mod looks at the session's subagents, without a model request. When neither the transcript nor the token count of one has changed for 11 minutes, the mod starts a turn in the session with a report that names it. It ends no subagent, and a report waits while a turn of the session is running.
-- **A dispatcher session gets nine more tools.** With them it manages a pool of worker sessions that run in Terminal windows. It can open them, reset or compact their conversations, read their state, and close or replace them.
+- **A dispatcher session gets ten more tools.** With them it manages a pool of worker sessions that run in Terminal windows. It can open them, reset or compact their conversations, read their state, close or replace them, and bring back the unfinished conversations of those whose sessions have ended.
 
 What the plugin does, in full, is in the specs, listed in [docs/specs/README.md](docs/specs/README.md).
 
@@ -76,6 +76,7 @@ A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`, except `
 | `compact` | the dispatcher session | Types `/compact` into a worker session's Terminal tab and confirms that it took effect. |
 | `close`, `recycle` | the dispatcher session | End a worker session, or end it and open a new one under the same name. |
 | `release` | the dispatcher session | Takes a slot off the roster and leaves its session alone. |
+| `restore` | the dispatcher session | After worker sessions have ended, as when the Mac restarts, resumes in a new Terminal window under each slot's name the conversation the plugin's mod last saw for it, when that conversation had work in it. Sends the resumed session nothing. |
 
 `compact_self` works one of two ways:
 
@@ -87,7 +88,7 @@ A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`, except `
 - **With the mod.** When a hook record shows that the plugin's hooks run in the worker session, the server leaves a clear order for the session's session ID, a file under `~/.claude-session-pool/clear-orders/`, and types nothing. The plugin's mod in that session has Claude Code watch that directory and runs `/clear` once no turn is running. The result says that the command was delivered as a clear order. If the session ID has not changed 30 seconds after the order was written, `clear` reports that the order was written and not confirmed, removes it, and does not type the command instead. A mod that Claude Code loads again, as it does when a file under a `--plugin-dir` directory is saved, is told of no more changes until the session starts again, so `clear` reports the same for that session.
 - **By typing.** With no such hook record, the server types `/clear` into the session's Terminal tab, as `compact` does, and the result says so.
 
-Only `clear` has the first way. `compact`, `init`, `open`, `adopt`, `close` and `recycle` still use Terminal's scripting interface.
+Only `clear` has the first way. `compact`, `init`, `open`, `adopt`, `close`, `recycle` and `restore` still use Terminal's scripting interface.
 
 ## Running the dispatcher
 

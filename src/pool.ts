@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { type LiveSession, type LookEntry, type Resolved, resolveSlot } from "../plugin/hooks/pool-rule.ts";
+import { type LiveSession, type LookEntry, type Resolved, type RestoreJudgement, judgeRestore, resolveSlot, sessionNamed } from "../plugin/hooks/pool-rule.ts";
 import { LookRecordStore } from "./look-records.ts";
 import type { Clock, Processes, SessionEntry, SessionLister, TabRef, Terminal, TranscriptMark, Transcripts } from "./ports.ts";
 import { type Outcome, attempt, describeSession, messageOf } from "./report.ts";
@@ -42,6 +42,9 @@ const DEFAULT_PERMISSION_MODE = "auto";
 type Observed = Resolved | { state: "unknown"; error: string };
 
 type OpenArgs = { name: string; model?: string; permissionMode?: string };
+/** The model and the permission mode a session is started with; one that is left out is not passed. */
+type StartedWith = { model?: string; permissionMode?: string };
+type RestoreArgs = { names?: string[]; model?: string; permissionMode?: string };
 
 /** The slots registered for one directory, and the operations a dispatcher session performs on them. */
 export class Pool {
@@ -124,6 +127,109 @@ export class Pool {
     });
   }
 
+  /** claude-session-pool::US-008. */
+  async restore(args: RestoreArgs): Promise<Outcome> {
+    // Each name in turn, with the reason it is only named and not acted on where there is one.
+    let turns: { name: string; named?: string }[];
+    try {
+      if (args.names !== undefined && args.names.length === 0) throw new Refusal("names lists no slot; nothing was restored.");
+      if (args.model !== undefined) checkModel(args.model);
+      if (args.permissionMode !== undefined) checkPermissionMode(args.permissionMode);
+      turns = args.names === undefined ? await this.restoreCandidates() : args.names.map((name) => ({ name }));
+    } catch (error) {
+      return { ok: false, text: messageOf(error) };
+    }
+    if (turns.length === 0) return { ok: true, text: "No slot of the roster is gone; nothing was restored." };
+    const lines: string[] = [];
+    let ok = true;
+    for (const { name, named } of turns) {
+      if (named !== undefined) {
+        lines.push(`${name}: not restored. ${named}`);
+        continue;
+      }
+      const outcome = await attempt(() => this.restoreSlot(name, args));
+      ok &&= outcome.ok;
+      lines.push(`${name}: ${outcome.ok ? "restored" : "not restored"}. ${outcome.text}`);
+    }
+    return { ok, text: lines.join("\n") };
+  }
+
+  /**
+   * The `gone` slots of the roster, in its order, for a `restore` without names (claude-session-pool::US-008/AC-03). A
+   * slot whose entry gives no conversation with work in it is only named, with the reason.
+   */
+  private async restoreCandidates(): Promise<{ name: string; named?: string }[]> {
+    const slots = this.roster.read();
+    const sessions = await this.deps.sessions.list();
+    const look = this.lookRecords.read();
+    return slots.flatMap((slot) => {
+      const judgement = judgeRestore(slot, sessions, this.directory, canonical, look);
+      if (judgement.verdict === "not gone") return [];
+      const unfinished = judgement.verdict !== "no entry" && judgement.verdict !== "no work" && judgement.verdict !== "ended by recycle";
+      return [unfinished ? { name: slot.name } : { name: slot.name, named: this.describeRefusal(slot.name, judgement) }];
+    });
+  }
+
+  private async restoreSlot(name: string, args: RestoreArgs): Promise<string> {
+    checkSlotName(name);
+    const slot = this.requireSlot(name);
+    if (this.opening.has(name)) throw new Refusal(`Another call is already opening "${name}"; nothing was opened.`);
+    this.opening.add(name);
+    try {
+      const judgement = judgeRestore(slot, await this.deps.sessions.list(), this.directory, canonical, this.lookRecords.read());
+      if (judgement.verdict !== "restore") throw new Refusal(this.describeRefusal(name, judgement));
+      const { entry } = judgement;
+      if (!this.deps.transcripts.mark(entry.sessionId)) {
+        throw new Refusal(`The transcript of session ${entry.sessionId}, which the look record names for "${name}", cannot be found; nothing was opened.`);
+      }
+      const startedWith: StartedWith = { model: args.model ?? slot.model, permissionMode: args.permissionMode ?? slot.permissionMode };
+      try {
+        if (startedWith.model !== undefined) checkModel(startedWith.model);
+        if (startedWith.permissionMode !== undefined) checkPermissionMode(startedWith.permissionMode);
+      } catch (error) {
+        throw new Refusal(
+          `The roster records for "${name}" a value that may not be passed: ${messageOf(error)} Nothing was opened; pass model and permissionMode to start it with others.`,
+        );
+      }
+      const argv = ["claude", "-n", name, "--resume", entry.sessionId];
+      if (startedWith.model !== undefined) argv.push("--model", startedWith.model);
+      if (startedWith.permissionMode !== undefined) argv.push("--permission-mode", startedWith.permissionMode);
+      const session = await this.launch(name, argv, startedWith, true, false);
+      const passed = [
+        startedWith.model === undefined ? "no --model" : `--model ${startedWith.model}`,
+        startedWith.permissionMode === undefined ? "no --permission-mode" : `--permission-mode ${startedWith.permissionMode}`,
+      ];
+      const own = startedWith.model === undefined || startedWith.permissionMode === undefined ? " Claude Code chose what was not passed." : "";
+      return `Session ${session.sessionId} is idle in a new window; the look record last saw it ${entry.state} at ${entry.seenAt}. Passed ${passed.join(" and ")}.${own}`;
+    } finally {
+      this.opening.delete(name);
+    }
+  }
+
+  /** Why `restore` does not act on the slot `name` (claude-session-pool::US-008/AC-04). */
+  private describeRefusal(name: string, judgement: Exclude<RestoreJudgement, { verdict: "restore" }>): string {
+    const anew = `open starts a new session under the name.`;
+    switch (judgement.verdict) {
+      case "not gone":
+        return `The slot "${name}" is ${this.describeResolved(judgement.resolved)}, not gone; nothing was opened.`;
+      case "name taken":
+        return nameTaken(name, judgement.session);
+      case "no look record":
+        return `The pool has no look record (${this.lookRecords.path}), so nothing says which conversation "${name}" had; nothing was opened.`;
+      case "no entry":
+        return `The look record has no entry for "${name}"; nothing was opened.`;
+      case "no work":
+        return `The look record says that the conversation of "${name}" (session ${judgement.entry.sessionId}) had no work in it; nothing was opened. ${anew}`;
+      case "ended by recycle":
+        return `Session ${judgement.entry.sessionId}, which the look record names for "${name}", is the one recycle ended for it; nothing was opened. ${anew}`;
+      case "conversation held": {
+        const { pid, name: holder, cwd } = judgement.session;
+        const called = holder === undefined ? "with no name" : `named "${holder}"`;
+        return `Session ${judgement.entry.sessionId}, which the look record names for "${name}", is already held by a live session (pid ${pid}, ${called}, in ${cwd}); nothing was opened.`;
+      }
+    }
+  }
+
   release(args: { name: string }): Promise<Outcome> {
     return attempt(async () => {
       checkSlotName(args.name);
@@ -145,44 +251,48 @@ export class Pool {
     if (this.opening.has(name)) throw new Refusal(`Another call is already opening "${name}"; nothing was opened.`);
     this.opening.add(name);
     try {
-      const taken = (await this.deps.sessions.list()).find((session) => session.pid !== undefined && session.name === name);
-      if (taken) {
-        throw new Refusal(`A live session already answers to "${name}" (pid ${taken.pid}, in ${taken.cwd}); nothing was opened.`);
-      }
-      const { windowId } = await this.exclusive(() =>
-        this.deps.terminal.open({
-          directory: this.directory,
-          argv: ["claude", "-n", name, "--model", model, "--permission-mode", permissionMode],
-        }),
-      );
-      const deadline = this.deps.clock.now() + LIMITS.openReadyMs;
-      let seen: Observed;
-      for (;;) {
-        seen = await this.observe(name);
-        if (seen.state === "live" && seen.session.status === "idle") {
-          await this.recordOpened(name, seen.session.pid);
-          return `Opened "${name}": idle, session ${seen.session.sessionId}.`;
-        }
-        if (this.deps.clock.now() >= deadline) break;
-        await this.deps.clock.sleep(LIMITS.pollMs);
-      }
-      // A slot that stays in the roster must record the session just opened for it, or forget the one it recorded.
-      if (keepsSlot) await this.recordOpened(name, seen.state === "live" ? seen.session.pid : undefined);
-      const visible = await this.deps.terminal
-        .lastLines(windowId)
-        .catch((error: unknown) => `(the window's contents could not be read: ${messageOf(error)})`);
-      const kept = recycling
-        ? "Its window was left open."
-        : keepsSlot
-          ? `Its window was left open. "${name}" stays in the roster.`
-          : `Its window was left open and "${name}" was not added to the roster.`;
-      const listing = seen.state === "unknown" ? ` The sessions could not be listed: ${seen.error}` : "";
-      throw new Refusal(
-        `A window was opened for "${name}", but its session was not idle after ${LIMITS.openReadyMs / 1000} seconds. ${kept}${listing} The window shows:\n${quoted(visible)}`,
-      );
+      const taken = sessionNamed(await this.deps.sessions.list(), name);
+      if (taken) throw new Refusal(nameTaken(name, taken));
+      const argv = ["claude", "-n", name, "--model", model, "--permission-mode", permissionMode];
+      const session = await this.launch(name, argv, { model, permissionMode }, keepsSlot, recycling);
+      return `Opened "${name}": idle, session ${session.sessionId}.`;
     } finally {
       this.opening.delete(name);
     }
+  }
+
+  /**
+   * Opens a new window that runs `argv` in the pool directory for the slot `name`, waits until its session is idle and
+   * records it in the roster with what it was started with; `keepsSlot` tells whether the slot stays in the roster when
+   * the session is not idle in time.
+   */
+  private async launch(name: string, argv: string[], startedWith: StartedWith, keepsSlot: boolean, recycling: boolean): Promise<LiveSession> {
+    const { windowId } = await this.exclusive(() => this.deps.terminal.open({ directory: this.directory, argv }));
+    const deadline = this.deps.clock.now() + LIMITS.openReadyMs;
+    let seen: Observed;
+    for (;;) {
+      seen = await this.observe(name);
+      if (seen.state === "live" && seen.session.status === "idle") {
+        await this.recordOpened(name, seen.session.pid, startedWith);
+        return seen.session;
+      }
+      if (this.deps.clock.now() >= deadline) break;
+      await this.deps.clock.sleep(LIMITS.pollMs);
+    }
+    // A slot that stays in the roster must record the session just opened for it, or forget the one it recorded.
+    if (keepsSlot) await this.recordOpened(name, seen.state === "live" ? seen.session.pid : undefined, startedWith);
+    const visible = await this.deps.terminal
+      .lastLines(windowId)
+      .catch((error: unknown) => `(the window's contents could not be read: ${messageOf(error)})`);
+    const kept = recycling
+      ? "Its window was left open."
+      : keepsSlot
+        ? `Its window was left open. "${name}" stays in the roster.`
+        : `Its window was left open and "${name}" was not added to the roster.`;
+    const listing = seen.state === "unknown" ? ` The sessions could not be listed: ${seen.error}` : "";
+    throw new Refusal(
+      `A window was opened for "${name}", but its session was not idle after ${LIMITS.openReadyMs / 1000} seconds. ${kept}${listing} The window shows:\n${quoted(visible)}`,
+    );
   }
 
   private async adoptSlot(name: string): Promise<string> {
@@ -349,6 +459,16 @@ export class Pool {
       await this.deps.clock.sleep(LIMITS.pollMs);
     }
     const ended = `Closed "${name}": its session (pid ${session.pid}) ended.`;
+    // recycle: until a new session is recorded for the slot, the roster says which conversation was ended, so that
+    // `restore` does not resume it (docs/specs/claude-session-pool.md, "Roster file").
+    if (keepSlot && session.sessionId !== undefined) {
+      const endedSessionId = session.sessionId;
+      try {
+        await this.updateRoster((slots) => slots.map((candidate) => (candidate.name === name ? { ...candidate, endedSessionId } : candidate)));
+      } catch (error) {
+        throw new Refusal(`${ended} The roster could not be updated, so no new session was opened: ${messageOf(error)}`);
+      }
+    }
     if (!keepSlot) {
       try {
         await this.removeSlot(name);
@@ -419,9 +539,9 @@ export class Pool {
   }
 
   /** Records the session opened for a slot. A failure here follows an opened window, so the error says so. */
-  private async recordOpened(name: string, pid: number | undefined): Promise<void> {
+  private async recordOpened(name: string, pid: number | undefined, startedWith: StartedWith): Promise<void> {
     try {
-      await this.registerOpened(name, pid);
+      await this.registerOpened(name, pid, startedWith);
     } catch (error) {
       throw new Refusal(`A window was opened for "${name}", but the roster could not be updated: ${messageOf(error)}`);
     }
@@ -439,8 +559,12 @@ export class Pool {
       : state;
   }
 
-  private registerOpened(name: string, pid: number | undefined): Promise<void> {
-    const slot: Slot = pid === undefined ? { name, origin: "opened" } : { name, origin: "opened", pid };
+  /** Records a new session the server opened for the slot; what an earlier session of the slot left in the roster goes. */
+  private registerOpened(name: string, pid: number | undefined, { model, permissionMode }: StartedWith): Promise<void> {
+    const slot: Slot = { name, origin: "opened" };
+    if (pid !== undefined) slot.pid = pid;
+    if (model !== undefined) slot.model = model;
+    if (permissionMode !== undefined) slot.permissionMode = permissionMode;
     return this.updateRoster((slots) => [...slots.filter((candidate) => candidate.name !== name), slot]);
   }
 
@@ -492,6 +616,11 @@ export class Pool {
     this.queue = result.catch(() => undefined);
     return result;
   }
+}
+
+/** The refusal of a name that a live session already answers to (claude-session-pool::US-001/AC-05). */
+function nameTaken(name: string, session: LiveSession): string {
+  return `A live session already answers to "${name}" (pid ${session.pid}, in ${session.cwd}); nothing was opened.`;
 }
 
 /** A `gone` slot with an entry in the look record (claude-session-pool::US-005/AC-04): what the last look that found it live found. */

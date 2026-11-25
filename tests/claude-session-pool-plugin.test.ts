@@ -46,7 +46,7 @@ import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/tempo
 
 afterEach(cleanUpTemporaryDirectories);
 
-const POOL_TOOLS = ["adopt", "clear", "close", "compact", "init", "open", "recycle", "release", "status"];
+const POOL_TOOLS = ["adopt", "clear", "close", "compact", "init", "open", "recycle", "release", "restore", "status"];
 
 describe("the plugin", () => {
   it("is named cc-session-pool and declares the server pool, run by node, with its tools loaded up front and a 24-hour limit on one call", () => {
