@@ -1592,6 +1592,29 @@ describe("restore", () => {
     expect(mac.launches.slice(launchesBefore).map((launch) => launch.argv[4])).toEqual([ended.w1, ended.w3]);
   });
 
+  it("refuses names that lists no slot, opens nothing and leaves the roster as it was, though a slot is gone with work in it", async () => {
+    const { mac, pool, rosterPath, launchesBefore } = await endedPool([{ name: "w1" }]);
+    const roster = readFileSync(rosterPath, "utf8");
+
+    const outcome = await pool.restore({ names: [] });
+
+    expect(outcome).toEqual({ ok: false, text: "names lists no slot; nothing was restored." });
+    expect(mac.launches).toHaveLength(launchesBefore);
+    expect(readFileSync(rosterPath, "utf8")).toBe(roster);
+  });
+
+  it("without names, says that no slot is gone and opens nothing when every slot is live", async () => {
+    const { mac, pool } = setup();
+    await pool.open({ name: "w1" });
+    await pool.open({ name: "w2" });
+    const launchesBefore = mac.launches.length;
+
+    const outcome = await pool.restore({});
+
+    expect(outcome).toEqual({ ok: true, text: "No slot of the roster is gone; nothing was restored." });
+    expect(mac.launches).toHaveLength(launchesBefore);
+  });
+
   type Context = Awaited<ReturnType<typeof endedPool>>;
   it.each<[string, Ended, (context: Context) => string, string?]>([
     ["the name is not a slot", { name: "w1" }, ({ mac, directory }) => {
