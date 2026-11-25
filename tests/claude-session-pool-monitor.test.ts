@@ -543,14 +543,6 @@ describe("the slots gone at the first look after the mod is loaded (claude-sessi
     expect(pool.mod.prompts).toEqual([report("- No live session in the pool directory answers to these slots of the roster: wb.")]);
   });
 
-  it("leave out the second sentence when restore brings back none of them", async () => {
-    const pool = await dispatcher(["wa"]);
-
-    await pool.looks(3);
-
-    expect(pool.mod.prompts).toEqual([report("- No live session in the pool directory answers to these slots of the roster: wa.")]);
-  });
-
   it("wait, while a turn runs, as the slots of them that are still gone, and are not reported when none is (claude-session-pool-plugin::REQ-005/AC-02)", async () => {
     const pool = await dispatcher(["wa", "wb"]);
     await (await pool.worker(W2)).loads();
