@@ -60,7 +60,9 @@ export async function lookAtSubagents($: WatchEngine, watch: Watch): Promise<Due
     const before = watch.get(agent.id);
     // claude-session-pool-plugin::REQ-007/AC-01: a size that cannot be read leaves the token count alone to count.
     const progress = before === undefined || before.tokens !== agent.tokenCount || (before.size !== undefined && size !== undefined && before.size !== size);
-    const seen: Seen = progress ? { quiet: 0, size, tokens: agent.tokenCount, reported: false } : { ...before, quiet: before.quiet + 1, size };
+    // A stall keeps its record until progress ends it, so a report that Claude Code takes after a later look marks the
+    // stall that is still watched (claude-session-pool-plugin::REQ-006).
+    const seen: Seen = progress ? { quiet: 0, size, tokens: agent.tokenCount, reported: false } : Object.assign(before, { quiet: before.quiet + 1, size });
     watch.set(agent.id, seen);
     if (seen.quiet >= STALLED_AFTER && !seen.reported) due.push({ line: stalledLine(agent, seen.quiet), seen });
   }

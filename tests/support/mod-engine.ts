@@ -68,9 +68,17 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   const prompts: string[] = [];
   /**
    * How Claude Code answers the mod's next prompts: `take` resolves with the prompt, `drop` resolves with a reason (as when
-   * the owner stopped the session and typed nothing since), `reject` rejects, `hold` does not answer.
+   * the owner stopped the session and typed nothing since), `reject` rejects, `hold` does not answer until `takeHeld`
+   * takes every prompt held so far, as Claude Code does once the session is idle.
    */
-  const promptAnswer = { kind: "take" as "take" | "drop" | "reject" | "hold" };
+  const heldPrompts: (() => void)[] = [];
+  const promptAnswer = {
+    kind: "take" as "take" | "drop" | "reject" | "hold",
+    takeHeld: async () => {
+      for (const take of heldPrompts.splice(0)) take();
+      await settle();
+    },
+  };
   const timers: { ms: number; run: () => void }[] = [];
   /** The intervals the mod set (`$.clock.every`) and has not cancelled, and that a reload of the mod has not stopped. */
   const intervals: { ms: number; run: () => void }[] = [];
@@ -134,8 +142,9 @@ export async function modSetup({ interactive = true, told = true, registerFails 
         prompts.push(text);
         if (promptAnswer.kind === "drop") return Promise.resolve({ drop: "the session was stopped and nobody has sent input since" });
         if (promptAnswer.kind === "reject") return Promise.reject(new Error("cc-session-pool: $.prompt.submit: the session is stopping"));
-        if (promptAnswer.kind === "hold") return new Promise(() => {});
-        return Promise.resolve({ text, origin: { kind: "plugin", name: "cc-session-pool" } });
+        const taken = { text, origin: { kind: "plugin", name: "cc-session-pool" } };
+        if (promptAnswer.kind === "hold") return new Promise((resolve) => void heldPrompts.push(() => resolve(taken)));
+        return Promise.resolve(taken);
       },
     },
     clock: {

@@ -392,13 +392,18 @@ describe("a report of the mod", () => {
     expect(prompts[1]).toContain(`- ${SUBAGENT} `);
   });
 
-  it("is not made twice while Claude Code has not answered the first prompt (claude-session-pool-plugin::REQ-006)", async () => {
+  it("is not made twice while Claude Code has not answered the first prompt, nor after it takes it looks later (claude-session-pool-plugin::REQ-006)", async () => {
     const { promptAnswer, startSubagent, look, prompts } = await modSetup();
     startSubagent(SUBAGENT);
     promptAnswer.kind = "hold";
-
     await look(15);
+    const whileHeld = prompts.length;
 
+    promptAnswer.kind = "take";
+    await promptAnswer.takeHeld();
+    await look(5);
+
+    expect(whileHeld).toBe(1);
     expect(prompts).toHaveLength(1);
   });
 });
@@ -414,6 +419,13 @@ describe("progress in a subagent", () => {
       at6: (mod: Mod) => void (mod.agents.listed[0]!.tokenCount = 48_524),
     },
     { what: "its transcript cannot be read and its token count stays", reportedAt: [12], before: (mod: Mod) => rmSync(join(mod.subagentDirectory, `agent-${SUBAGENT}.jsonl`)), at6: () => {} },
+    { what: "its transcript can no longer be read and its token count stays", reportedAt: [12], at6: (mod: Mod) => rmSync(join(mod.subagentDirectory, `agent-${SUBAGENT}.jsonl`)) },
+    {
+      what: "its transcript can be read again and its token count stays",
+      reportedAt: [12],
+      before: (mod: Mod) => rmSync(join(mod.subagentDirectory, `agent-${SUBAGENT}.jsonl`)),
+      at6: (mod: Mod) => mod.writeTranscript(SUBAGENT, 284_744),
+    },
   ])(
     "is found when $what, and the count starts anew from that look (claude-session-pool-plugin::REQ-007/AC-01, claude-session-pool-subagent-watch::US-001/AC-02)",
     async ({ reportedAt, before, at6 }: { reportedAt: number[]; before?: (mod: Mod) => void; at6: (mod: Mod) => void }) => {
