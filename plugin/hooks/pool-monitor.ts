@@ -5,7 +5,9 @@
 //
 // Of a worker session the monitor uses what the look took of it: the listing's entry and the activity record
 // (claude-session-pool-monitor::REQ-001). Of its own session it reads the transcript, for the cross-session messages it
-// received (claude-session-pool-monitor::REQ-002), and of a message only who sent it and when it arrived.
+// received (claude-session-pool-monitor::REQ-002), and of a message only who sent it and when it arrived. It reads the
+// transcript by ranges, as a mod can read no more of a file at once ("What a mod can read"), and each look reads only what was
+// added since an earlier look read it.
 //
 // Like the module, this file imports nothing but the plugin's files, and it passes Claude Code's interface for mods only
 // to functions declared at its top. The type below states the part of that interface it uses, as measured on Claude Code
@@ -16,7 +18,10 @@ import { SESSION_ID_FORM } from "./pool-rule.ts";
 import { PART } from "./subagent-watch.ts";
 
 export type MonitorEngine = {
-  fs: { read: (path: string) => Promise<string> };
+  fs: {
+    read: (path: string, options: { as: "bytes"; offset: number; length: number }) => Promise<{ base64: string }>;
+    stat: (path: string) => Promise<{ size: number }>;
+  };
   /** `transcriptPath` is the transcript of the session's present conversation; empty where it keeps none on this machine. */
   session: { info: () => Promise<{ transcriptPath: string }> };
 };
@@ -54,7 +59,15 @@ export type Monitor = {
   acting: Map<string, number>;
   /** For each slot, how many such calls on it have returned, so that a look made across a return leaves the slot out. */
   returned: Map<string, number>;
+  /** What has been read of the session's present transcript, once a look has read it. */
+  transcript: Transcript | undefined;
 };
+
+/**
+ * What the monitor has read of one transcript: up to `offset`, the end of the last whole record it read, and whether the
+ * bytes from there go on with a record longer than one range, which is passed over.
+ */
+type Transcript = { path: string; offset: number; passingOver: boolean; received: Received };
 
 /** A line that is due, and what to keep once the report that holds it has been taken. */
 export type Line = { text: string; reported: () => void };
@@ -74,6 +87,9 @@ const BLIND_LOOKS = 10;
 
 const FIRST_LINE = "Report of the pool monitor, written by the cc-session-pool plugin. It is not a message from the user. What it found:";
 const LAST_LINE = "Nothing was done to any slot. Each of these is reported once.";
+/** The most bytes that one read of a file gives a mod (claude-session-pool-monitor, "What a mod can read"). */
+const RANGE_BYTES = 4 * 1024 * 1024;
+const NEWLINE = 0x0a;
 /** The start of a received cross-session message's record, which names the sending session's process ID (REQ-002/AC-02). */
 const RECEIVED_FROM = /^<cross-session-message from="uds:[^"]*\/([1-9][0-9]*)\.sock"/;
 
@@ -84,22 +100,28 @@ export const newMonitor = (): Monitor => ({
   blind: { looks: 0, reason: "listing", reported: false },
   acting: new Map(),
   returned: new Map(),
+  transcript: undefined,
 });
 
 const newSlot = (): Slot => ({ livened: 0, live: false, goneReported: 0, ambiguousReported: undefined, waiting: undefined, unrecorded: undefined, stall: undefined, stop: undefined });
 
 /**
- * A slot a pool tool's call acted on: it counts as not seen live and its runs of looks break, counting their looks anew,
- * while a condition that was dealt with stays dealt with for as long as it lasts (claude-session-pool-monitor::US-001/AC-09).
+ * The slot `name`, which a pool tool's call acted on: it counts as not seen live, so that it is not reported `gone` before
+ * it has been live again, and its runs of looks break, counting their looks anew, while a condition that was dealt with
+ * stays dealt with for as long as it lasts (claude-session-pool-monitor::US-001/AC-09). The slot is changed in place, so
+ * that a report of it that is waiting to be taken marks the slot that stays.
  */
-const leftOutSlot = (slot: Slot | undefined): Slot => ({
-  ...newSlot(),
-  ambiguousReported: slot?.ambiguousReported,
-  waiting: slot?.waiting && { ...slot.waiting, looks: 0 },
-  unrecorded: slot?.unrecorded && { ...slot.unrecorded, looks: 0 },
-  stall: slot?.stall,
-  stop: slot?.stop,
-});
+function leaveOut(monitor: Monitor, name: string): void {
+  const slot = monitor.slots.get(name);
+  if (slot === undefined) {
+    monitor.slots.set(name, newSlot());
+    return;
+  }
+  slot.live = false;
+  slot.goneReported = slot.livened;
+  if (slot.waiting !== undefined) slot.waiting.looks = 0;
+  if (slot.unrecorded !== undefined) slot.unrecorded.looks = 0;
+}
 
 /** A pool tool's call that acts on the slots `names` has started: looks leave them out until it has returned. */
 export function actingStarts(monitor: Monitor, names: readonly string[]): void {
@@ -113,7 +135,7 @@ export function actingEnds(monitor: Monitor, names: readonly string[]): void {
     if (left > 0) monitor.acting.set(name, left);
     else monitor.acting.delete(name);
     monitor.returned.set(name, (monitor.returned.get(name) ?? 0) + 1);
-    monitor.slots.set(name, leftOutSlot(monitor.slots.get(name)));
+    leaveOut(monitor, name);
   }
 }
 
@@ -136,11 +158,11 @@ export async function judgePool($: MonitorEngine, monitor: Monitor, sight: Sight
   const lines: Line[] = [];
   const first = firstLookLine(monitor, sight.slots, leftOut);
   if (first !== undefined) lines.push(first);
-  const transcript = lazily(() => receivedMessages($));
+  const transcript = lazily(() => receivedMessages($, monitor));
   for (const seen of sight.slots) {
     const { name } = seen.slot;
     if (leftOut(name)) {
-      monitor.slots.set(name, leftOutSlot(monitor.slots.get(name)));
+      leaveOut(monitor, name);
       continue;
     }
     const slot = monitor.slots.get(name) ?? newSlot();
@@ -199,7 +221,7 @@ async function slotLines(slot: Slot, seen: SlotSight, at: number, loadedAt: numb
     slot.ambiguousReported = undefined;
     const { livened } = slot;
     if (livened === 0 || slot.goneReported === livened) return [];
-    return [{ text: `- ${name}: gone. No live session in the pool directory answers to this name any more.`, reported: () => (slot.goneReported = livened) }];
+    return [{ text: `- ${name}: gone. No live session in the pool directory answers to this name any more.`, reported: () => (slot.goneReported = Math.max(slot.goneReported, livened)) }];
   }
   if (resolved.state === "ambiguous") {
     const { count } = resolved;
@@ -279,17 +301,53 @@ function toldBy(received: Received | undefined, pid: number, endedAt: number): "
 /**
  * The dispatcher session's transcript, read for the messages it received: records of a queued cross-session message, by
  * the process ID in the address they came from and their time of arrival. Their text is not read.
+ *
+ * It is read by ranges of whole records, each range cut after its last newline: a record that a range's end cuts is read
+ * whole by the next range, and a last record that has no newline yet, by a later look. A look goes on from where the
+ * earlier look of this load of the mod left the transcript, and starts it anew when the session's transcript is another
+ * one, as after a `/clear`, or has become shorter than what was read of it. A record longer than one range is passed over
+ * (claude-session-pool-monitor, "A record of the dispatcher session's transcript is longer than the read limit").
  */
-async function receivedMessages($: MonitorEngine): Promise<Received | undefined> {
-  let text: string;
+async function receivedMessages($: MonitorEngine, monitor: Monitor): Promise<Received | undefined> {
   try {
-    const { transcriptPath } = await $.session.info();
-    if (transcriptPath === "") return undefined;
-    text = await $.fs.read(transcriptPath);
+    const { transcriptPath: path } = await $.session.info();
+    if (path === "") return undefined;
+    const { size } = await $.fs.stat(path);
+    let read = monitor.transcript;
+    if (read === undefined || read.path !== path || size < read.offset)
+      read = monitor.transcript = { path, offset: 0, passingOver: false, received: { earliest: undefined, messages: [] } };
+    while (read.offset < size) {
+      const from = read.offset;
+      const bytes = bytesOf((await $.fs.read(path, { as: "bytes", offset: from, length: Math.min(RANGE_BYTES, size - from) })).base64);
+      // The file has become shorter since it was measured: a later look reads it.
+      if (bytes.length === 0) break;
+      let start = 0;
+      if (read.passingOver) {
+        start = bytes.indexOf(NEWLINE) + 1;
+        if (start === 0) {
+          read.offset += bytes.length;
+          continue;
+        }
+        read.passingOver = false;
+      }
+      const end = bytes.lastIndexOf(NEWLINE) + 1;
+      if (end > start) takeRecords(read.received, new TextDecoder().decode(bytes.subarray(start, end)));
+      read.offset = from + Math.max(start, end);
+      if (end === 0 && bytes.length === RANGE_BYTES) {
+        // A whole range from the start of a record holds no newline: the record is longer than one range.
+        read.passingOver = true;
+        read.offset = from + bytes.length;
+      } else if (from + bytes.length >= size) break;
+      // Else the next range starts at the record that this range's end cut.
+    }
+    return read.received;
   } catch {
     return undefined;
   }
-  const received: Received = { earliest: undefined, messages: [] };
+}
+
+/** The messages and the earliest time of the whole records in `text`, added to `received`. */
+function takeRecords(received: Received, text: string): void {
   for (const line of text.split("\n")) {
     let record: unknown;
     try {
@@ -306,7 +364,14 @@ async function receivedMessages($: MonitorEngine): Promise<Received | undefined>
     const from = RECEIVED_FROM.exec(content);
     if (from !== null) received.messages.push({ pid: Number(from[1]), at });
   }
-  return received;
+}
+
+/** The bytes that a read with `as: "bytes"` gives as base64. */
+function bytesOf(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 /** `make` run once, when it is first asked for. */

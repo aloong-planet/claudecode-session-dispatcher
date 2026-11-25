@@ -4,7 +4,7 @@
  * dispatcher's temporary home directory, and the session listing is text shaped like what `claude agents --json` printed on
  * Claude Code 2.1.327.
  */
-import { copyFileSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ClaudeCli } from "../../src/adapters/claude-cli.ts";
 import { Pool } from "../../src/pool.ts";
@@ -88,11 +88,17 @@ export async function dispatcher(names: string[]) {
       await mod.look();
     }
   };
-  /** The dispatcher session's transcript, written with `records`, one line each: a string as it is, anything else as JSON. */
-  const transcript = (records: unknown[]) => {
-    const path = join(mod.home, ".claude", "projects", "-somewhere", `${SESSION}.jsonl`);
+  /**
+   * The dispatcher session's present transcript, written with `records`, one line each: a string as it is, anything else as
+   * JSON; with `append`, added at its end. `unfinished` is text after the last line, with no newline, as a record that is
+   * still being written.
+   */
+  const transcript = (records: unknown[], { append = false, unfinished = "" } = {}) => {
+    const path = mod.conversation.transcriptPath;
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, records.map((record) => `${typeof record === "string" ? record : JSON.stringify(record)}\n`).join(""));
+    const text = records.map((record) => `${typeof record === "string" ? record : JSON.stringify(record)}\n`).join("") + unfinished;
+    if (append) appendFileSync(path, text);
+    else writeFileSync(path, text);
   };
   return { mod, real, stateDirectory, roster, entry, lookRecord, lookRecordText, lookRecordPath, status, worker, looks, transcript };
 }

@@ -38,12 +38,12 @@
 
 import { callReturned, callStarted, loadActivity, lookAtActivity, newActivity, turnEnded, turnStarted, writeActivity, type Activity } from "./activity.ts";
 import { entriesWrittenAfter, lookAtPool, newPoolLook, recordPool, slotsActedOn, takePoolDirectory, type PoolEngine, type PoolLook } from "./pool-look.ts";
-import { actingEnds, actingNow, actingStarts, judgePool, monitorReport, newMonitor, type Monitor } from "./pool-monitor.ts";
+import { actingEnds, actingNow, actingStarts, judgePool, monitorReport, newMonitor, type Monitor, type MonitorEngine } from "./pool-monitor.ts";
 import { lookAtSubagents, reportText, type Watch, type WatchEngine } from "./subagent-watch.ts";
 
 /** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
 type ContextFigures = { tokens?: number; window: number; percent?: number };
-type Engine = WatchEngine & PoolEngine & {
+type Engine = WatchEngine & PoolEngine & MonitorEngine & {
   env: { get: (name: string) => Promise<string | undefined> };
   /** Reads a file's text, or writes one in place, making the directories its path needs; rejects when it cannot. */
   fs: WatchEngine["fs"] & { read: (path: string) => Promise<string>; write: (path: string, text: string) => Promise<unknown> };
