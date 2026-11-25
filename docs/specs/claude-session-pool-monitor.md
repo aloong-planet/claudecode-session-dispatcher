@@ -74,7 +74,7 @@ Applies to: the looks, the reports, and the writes that claude-session-pool-moni
 - **The look record cannot be read, or is not in its form, when the mod writes it** ([claude-session-pool](claude-session-pool.md), "The look record cannot be read"): the mod writes a new record from what that look found, so the slots that are `gone` or `ambiguous` at that look have no entry in it.
 - **A record of the dispatcher session's transcript is longer than the read limit** ("What a mod can read"), with the newline that ends it: it is passed over, and neither its time nor a cross-session message in it counts for claude-session-pool-monitor::REQ-002. The records after it count.
 - **The last record of the dispatcher session's transcript has no newline yet**, as one still being written: it does not count at that look, and counts at the first later look at which it has one.
-- **The dispatcher session moves to another directory**, by `/cd` or into a worktree: the mod keeps the pool directory it took when Claude Code loaded it. A mod loaded again after such a move takes the new directory, finds no roster there and judges no slot, and nothing reports it.
+- **The dispatcher session moves to another directory**, by `/cd` or into a worktree: the mod keeps the pool directory it took when Claude Code loaded it. A mod loaded again after a move by `/cd` takes the new directory, finds no roster there and judges no slot, and nothing reports it.
 
 ## Implementation Decisions
 
@@ -100,7 +100,7 @@ The report's text is the first line below, one line for each condition that is d
 | The pool was not seen, the roster could not be read | `- The monitor could not see the pool for <n> minutes: the roster could not be read.` |
 | Last line | `Nothing was done to any slot. Each of these is reported once.` |
 
-The line for the first look names the slots in the roster's order. Its second sentence names those of them that a call to `restore` without `names` would bring back by [claude-session-pool::US-008](claude-session-pool.md), judged from the session listing, the roster and the look record that the look wrote, without looking at the transcript of the conversation; it is left out when there is none. For a stalled or stopped slot `<n>` and `<m>` are the whole minutes between the time in the activity record and the look; for the last two lines `<n>` is the count of looks in a row that judged no slot.
+The line for the first look names the slots in the roster's order. Its second sentence names those of them that a call to `restore` without `names` would bring back by [claude-session-pool::US-008](claude-session-pool.md), judged from the session listing, the roster and the look record that the look wrote, without looking at the transcript of the conversation; it is left out when there is none. For a stalled or stopped slot `<n>` and `<m>` are the whole minutes between the time in the activity record and the look; for the two lines of a pool that was not seen `<n>` is the count of looks in a row that judged no slot.
 
 ### Which session the monitor runs in
 
@@ -116,8 +116,8 @@ The mod takes its session as a dispatcher session by the rule of [claude-session
 
 ## Out of Scope
 
-- **Judging a slot whose session writes no activity record**, by its transcripts or otherwise: a worker session has the plugin, and one whose mod does not run is reported as unrecorded.
-- **Knowing of a session's background commands.** A mod cannot list them, so a session that waits on one is reported as stalled.
+- **Judging a slot whose session writes no activity record**, by its transcripts or otherwise: a worker session has the plugin. What is reported of one whose mod does not run is stated in claude-session-pool-monitor::US-001/AC-08.
+- **Knowing of a session's background commands.** A mod cannot list them. What follows for a session that waits on one is stated in the boundary "A worker session's turn has ended and it waits on a background command of its own".
 - **Acting on a slot**: claude-session-pool-monitor::CON-001.
 - **Pausing the monitor, or choosing which slots it looks at**: claude-session-pool-monitor::US-001/AC-01.
 - **A session that is not a dispatcher session**: "Which session the monitor runs in".
