@@ -28,7 +28,8 @@
 //
 // In a dispatcher session it also writes the pool's look record at every look, with what the look found of each slot of
 // the roster, and writes a slot's entry anew when the session's call to `clear`, `open`, `recycle` or `restore` that names
-// the slot has returned, and the whole record when its call to `restore` without names has (pool-look.ts).
+// the slot has returned, and the whole record when its call to `restore` without names has (pool-look.ts). From what
+// each look found it starts a turn with a report when a slot needs attention (pool-monitor.ts).
 //
 // The module imports nothing but the files of the plugin beside it, which Claude Code 2.1.327 loads with it: Claude Code
 // gives a mod neither Node's modules nor the repository's packages. The types
@@ -36,12 +37,13 @@
 // clear order uses (the watch paths of classic.SessionStart, classic.FileChanged and $.command.run) was measured on 2.1.327.
 
 import { callReturned, callStarted, loadActivity, lookAtActivity, newActivity, turnEnded, turnStarted, writeActivity, type Activity } from "./activity.ts";
-import { entriesWrittenAfter, newPoolLook, recordPool, type PoolEngine, type PoolLook } from "./pool-look.ts";
+import { entriesWrittenAfter, lookAtPool, newPoolLook, recordPool, slotsActedOn, takePoolDirectory, type PoolEngine, type PoolLook } from "./pool-look.ts";
+import { actingEnds, actingNow, actingStarts, judgePool, monitorReport, newMonitor, type Monitor, type MonitorEngine } from "./pool-monitor.ts";
 import { lookAtSubagents, reportText, type Watch, type WatchEngine } from "./subagent-watch.ts";
 
 /** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
 type ContextFigures = { tokens?: number; window: number; percent?: number };
-type Engine = WatchEngine & PoolEngine & {
+type Engine = WatchEngine & PoolEngine & MonitorEngine & {
   env: { get: (name: string) => Promise<string | undefined> };
   /** Reads a file's text, or writes one in place, making the directories its path needs; rejects when it cannot. */
   fs: WatchEngine["fs"] & { read: (path: string) => Promise<string>; write: (path: string, text: string) => Promise<unknown> };
@@ -139,6 +141,7 @@ type State = {
   watch: Watch;
   activity: Activity;
   pool: PoolLook;
+  monitor: Monitor;
 };
 
 // Claude Code lets a mod pass `$` only to functions declared at the top of a module (of an imported one as well, as
@@ -248,21 +251,38 @@ async function compact($: Engine, state: State, asked: Request, turnEnd: number,
  * A look (claude-session-pool-plugin::REQ-004). What is due is reported at a look at which no turn runs, no compaction is
  * held or running (its request stands until it has run) and no report is waiting for its answer
  * (claude-session-pool-plugin::REQ-005/AC-02); it counts as reported only when Claude Code takes the prompt
- * (claude-session-pool-plugin::REQ-005/AC-03).
+ * (claude-session-pool-plugin::REQ-005/AC-03). Of the pool monitor's report and the subagent watch's, due at one look, the
+ * pool monitor's is made first, and the other at a later look.
  */
 async function look($: Engine, state: State): Promise<void> {
-  void recordPool($, state.pool);
+  const acting = actingNow(state.monitor);
+  const pool = lookAtPool($, state.pool);
   const { due, progressed } = await lookAtSubagents($, state.watch);
   await lookAtActivity($, state.activity, { turnRunning: state.isTurnRunning, subagentProgressed: progressed });
-  if (due.length === 0 || state.isTurnRunning || state.request !== undefined || state.reporting) return;
+  const lines = await judgePool($, state.monitor, await pool, acting);
+  if ((lines.length === 0 && due.length === 0) || state.isTurnRunning || state.request !== undefined || state.reporting) return;
   state.reporting = true;
   try {
-    const answer = await $.prompt.submit({ text: reportText(due) });
-    if (answer.drop === undefined) for (const { seen } of due) seen.reported = true;
+    if (lines.length > 0) {
+      const answer = await $.prompt.submit({ text: monitorReport(lines) });
+      if (answer.drop === undefined) for (const line of lines) line.reported();
+    } else {
+      const answer = await $.prompt.submit({ text: reportText(due) });
+      if (answer.drop === undefined) for (const { seen } of due) seen.reported = true;
+    }
   } catch {
     // Not taken: what was due stays due.
   } finally {
     state.reporting = false;
+  }
+}
+
+/** When Claude Code loads the mod in an interactive session: the time, from which the monitor judges a stop (claude-session-pool-monitor::US-001/AC-07). */
+async function loaded($: Engine, state: State): Promise<void> {
+  try {
+    state.monitor.loadedAt = await $.clock.now();
+  } catch {
+    // Without the time of loading, no slot is judged as stopped.
   }
 }
 
@@ -273,16 +293,20 @@ async function startActivity($: Engine, state: State): Promise<void> {
 }
 
 /**
- * A tool call of the main conversation runs from the moment Claude Code tells of it until its answer is given. A pool tool
- * that names a slot has the slot's entry in the look record written anew once it has returned
- * (claude-session-pool-monitor::REQ-004/AC-03).
+ * A tool call runs from the moment Claude Code tells of it until its answer is given. One of the main conversation is the
+ * session's own activity. A pool tool's call, from the main conversation or a subagent of it, has looks leave the slots it
+ * acts on out of the reports while it runs (claude-session-pool-monitor, "A pool tool"), and has the entries of the slots
+ * it names written anew once it has returned (claude-session-pool-monitor::REQ-004/AC-03).
  */
 async function trackCall($: Engine, state: State, e: ToolCall, next: (e: ToolCall) => Promise<unknown>): Promise<unknown> {
-  const call = callStarted($, state.activity, e.tool);
+  const call = e.agentId === undefined ? callStarted($, state.activity, e.tool) : undefined;
+  const acted = slotsActedOn(e);
+  actingStarts(state.monitor, acted);
   try {
     return await answerCall($, state, e, next);
   } finally {
-    callReturned($, state.activity, call);
+    if (call !== undefined) callReturned($, state.activity, call);
+    actingEnds(state.monitor, acted);
     const written = entriesWrittenAfter(e);
     if (written === "every slot") void recordPool($, state.pool);
     else if (written !== undefined) void recordPool($, state.pool, written);
@@ -330,6 +354,7 @@ export const register = (on: On): void => {
     watch: new Map(),
     activity: newActivity(),
     pool: newPoolLook(),
+    monitor: newMonitor(),
   };
 
   on("classic.SessionStart", async ($, e, next) => {
@@ -347,6 +372,8 @@ export const register = (on: On): void => {
   on("session.start", async ($, e, next) => {
     state.isInteractive = e.isInteractive;
     if (e.isInteractive) {
+      takePoolDirectory($, state.pool);
+      void loaded($, state);
       $.clock.every(LOOK_MS, () => void look($, state));
       void startActivity($, state);
     }
@@ -359,7 +386,7 @@ export const register = (on: On): void => {
     return next(e);
   });
 
-  on("tool.call", ($, e, next) => (state.isInteractive && e.agentId === undefined ? trackCall($, state, e, next) : answerCall($, state, e, next)));
+  on("tool.call", ($, e, next) => (state.isInteractive ? trackCall($, state, e, next) : answerCall($, state, e, next)));
 
   on("turn.start", ($, e, next) => {
     if (e.agentId === undefined) {

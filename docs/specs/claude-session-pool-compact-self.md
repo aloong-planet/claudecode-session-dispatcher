@@ -59,7 +59,7 @@ Applies to: a `compact_self` call the server handles; the session runs in a wind
 - **The mod is loaded again while it holds a request or while a compaction it asked for runs**: what the mod held is gone, which can leave the conversation compacted and the session not woken, with nothing to report it.
 - **The conversation has a wake request and the plugin's hooks do not run in the session**: the mod leaves the waking to a hook that does not run, and the session stays idle after the compaction.
 - **The plugin's hooks are switched off after the hook record was written**: a call the server handles types the command, the compaction runs, and nothing wakes the session.
-- **The turn the mod starts after a compaction cannot be started**, because Claude Code or another plugin's hook drops the mod's prompt: the session stays idle, and nothing reports it.
+- **The turn the mod starts after a compaction cannot be started**, because Claude Code or another plugin's hook drops the mod's prompt: the session stays idle, and nothing reports it but, for a worker session of a pool, the pool monitor's report of a stopped slot ([claude-session-pool-monitor::US-001/AC-07](claude-session-pool-monitor.md)).
 - **A `Stop` hook keeps the turn of the call from ending**: what the mod is told then has not been measured, so it is not known whether the compaction runs late, runs more than once or is dropped. The plugin declares no `Stop` hook.
 - **A subagent of the session calls `compact_self`** where the server handles the call: the server cannot tell the call from one made by the session itself, and it compacts the session.
 

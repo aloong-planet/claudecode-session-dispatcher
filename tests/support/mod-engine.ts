@@ -4,7 +4,7 @@
  * decide how each compaction ends, whether a prompt is taken, which context figures Claude Code has and which subagents
  * it lists. `modSetup` registers the mod's own `register` in it.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { register } from "../../plugin/hooks/register.ts";
 import { WakeState } from "../../src/wake.ts";
@@ -14,6 +14,8 @@ import { temporaryDirectory } from "./temporary.ts";
 export const TOOL = "mcp__plugin_cc-session-pool_pool__compact_self";
 /** What Claude Code 2.1.325 rejects a mod's tool with in a session started with no built-in tools. */
 export const REGISTRATION_REFUSED = 'cc-session-pool: $.tool.register: "context_usage" refused: this session has no built-in tools (--tools ""), so it takes none from plugins';
+/** The most bytes that one `$.fs.read` answers with on Claude Code 2.1.327. */
+export const READ_LIMIT = 4 * 1024 * 1024;
 /** The session ID that a `/clear` in the session gives it. */
 export const AFTER_CLEAR = "5b1f9a3e-7a49-4c0e-92a7-0f6f4f7c1a11";
 /** What Claude Code 2.1.327 rejects a mod's `$.command.run` with when it is called while a `classic.FileChanged` event is dispatched. */
@@ -28,6 +30,27 @@ export const USAGE_TOOL = "mcp__cc-session-pool__context_usage";
  * measured run (research: context-usage-as-a-tool.md, "Measured"), with the other figures in the form its types give.
  */
 export const MEASURED = { startedAt: 1_794_810_000_000, context: { tokens: 58965, window: 1000000, percent: 6 }, rateLimits: [], cost: { usd: 0.04 } };
+
+/** The options of `$.fs.read`. */
+type ReadOptions = { as?: "text" | "bytes"; offset?: number; length?: number };
+
+/**
+ * A file read as Claude Code 2.1.327 reads it for a mod (research: monitor-reports-2026-11-26, out/fsread-text.jsonl and
+ * out/fsread-bytes.jsonl): the range `offset`/`length` of its bytes, as text or as base64. An answer over 4 MiB is refused,
+ * and a text range that cuts a character gives U+FFFD at that edge.
+ */
+export function readFile(path: string, { as = "text", offset, length }: ReadOptions = {}): string | { base64: string } {
+  if (length !== undefined && (!Number.isInteger(length) || length < 0 || length > READ_LIMIT))
+    throw new Error(`cc-session-pool: fs.read: takes length, a whole number of bytes from 0 to ${READ_LIMIT} (got ${length}) (host check)`);
+  const bytes = readFileSync(path);
+  const start = offset ?? 0;
+  if (length === undefined && bytes.length - start > READ_LIMIT)
+    throw new Error(
+      `cc-session-pool: $.fs.read: ${path} refused: ${offset === undefined ? "the file is" : `what follows offset ${offset} is`} over the ${READ_LIMIT}-byte limit${offset === undefined ? "" : "; pass length"}`,
+    );
+  const range = bytes.subarray(start, length === undefined ? undefined : start + length);
+  return as === "bytes" ? { base64: range.toString("base64") } : new TextDecoder().decode(range);
+}
 
 type Hook = ($: unknown, e: unknown, next: (e: unknown) => Promise<unknown>) => Promise<unknown>;
 /** A subagent as Claude Code 2.1.327 lists it to a mod (`$.agent.list()`), with the fields the mod reads. */
@@ -90,7 +113,12 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   /** Every call the mod made to the engine, as `<noun>.<method>`. */
   const engineCalls: string[] = [];
   // Beside the session's transcript, the directory of its subagents' transcripts, laid out as Claude Code 2.1.327 does.
-  const transcriptPath = join(home, ".claude", "projects", "-somewhere", `${SESSION}.jsonl`);
+  /**
+   * The transcript of the session's present conversation, as `$.session.info()` gives it; a `/clear` names a new one.
+   * `cutAfterStat`: the length the transcript is cut to once the next stat of it has been answered, as a file that becomes
+   * shorter between its stat and a read of it.
+   */
+  const conversation = { transcriptPath: join(home, ".claude", "projects", "-somewhere", `${SESSION}.jsonl`), cutAfterStat: undefined as number | undefined };
   const subagentDirectory = join(home, ".claude", "projects", "-somewhere", SESSION, "subagents");
   /** The subagents Claude Code lists to the mod; `fails`: it rejects the call. */
   const agents = { listed: [] as ListedAgent[], fails: false };
@@ -107,17 +135,19 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   const clears = { fails: false, held: false, release: () => {} };
   /** Whether a `classic.FileChanged` event is being dispatched: Claude Code rejects `$.command.run` while it is. */
   const dispatching = { fileChanged: false };
-  /** The paths the mod read, and those it wrote. */
+  /** The paths the mod read, with the range of each read (`offset` and `length` as the mod passed them), and those it wrote. */
   const reads: string[] = [];
+  const readRanges: { path: string; offset?: number; length?: number }[] = [];
   const writes: string[] = [];
   /** The session's project root (`$.session.root()`): the directory it was started in. */
   const root = { path: join(home, "project") };
   mkdirSync(root.path);
   /**
    * What the commands the mod runs print: `claude agents --json` prints `listing.text` and exits with `listing.exitCode`;
-   * `fails`: the command cannot be started. `runs` holds the argument vector of every command the mod ran.
+   * `fails`: the command cannot be started. `held`: the listing has run, and what it printed is not given to the mod until
+   * `release` is called. `runs` holds the argument vector of every command the mod ran.
    */
-  const listing = { text: "[]", exitCode: 0, fails: false };
+  const listing = { text: "[]", exitCode: 0, fails: false, held: false, release: () => {} };
   const runs: string[][] = [];
   const engine = {
     ui: { log: (text: string, options?: unknown) => void logs.push({ text, options }) },
@@ -126,7 +156,12 @@ export async function modSetup({ interactive = true, told = true, registerFails 
         Promise.resolve(name === "HOME" && homeKnown ? home : name === "CLAUDE_SESSION_POOL_DISPATCHER_PID" ? variables.dispatcherPid : undefined),
     },
     fs: {
-      read: (path: string) => Promise.resolve().then(() => (reads.push(path), readFileSync(path, "utf8"))),
+      read: (path: string, options: ReadOptions = {}) =>
+        Promise.resolve().then(() => {
+          reads.push(path);
+          readRanges.push({ path, offset: options.offset, length: options.length });
+          return readFile(path, options);
+        }),
       // As Claude Code 2.1.327 does: makes the directories the path needs and writes the file in place.
       write: (path: string, text: string) =>
         Promise.resolve().then(() => {
@@ -139,6 +174,10 @@ export async function modSetup({ interactive = true, told = true, registerFails 
       stat: (path: string, options?: { resolve?: boolean }) =>
         Promise.resolve().then(() => {
           const stat = statSync(path);
+          if (path === conversation.transcriptPath && conversation.cutAfterStat !== undefined) {
+            truncateSync(path, conversation.cutAfterStat);
+            conversation.cutAfterStat = undefined;
+          }
           return { kind: stat.isDirectory() ? "dir" : "file", size: stat.size, mtimeMs: stat.mtimeMs, ...(options?.resolve ? { realPath: realpathSync(path) } : {}) };
         }),
       list: (path: string) =>
@@ -160,7 +199,7 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     session: {
       usage: () => usage.answer(),
       id: () => (session.idFails ? Promise.reject(new Error("no session")) : Promise.resolve(session.id)),
-      info: () => Promise.resolve({ transcriptPath }),
+      info: () => Promise.resolve({ transcriptPath: conversation.transcriptPath }),
       root: () => Promise.resolve(root.path),
       compact: () =>
         new Promise<{ skip?: string }>((resolve, reject) => {
@@ -194,7 +233,9 @@ export async function modSetup({ interactive = true, told = true, registerFails 
         runs.push([...argv]);
         if (listing.fails) return Promise.reject(new Error("cc-session-pool: $.process.run: claude: command not found"));
         const known = argv.join(" ") === "claude agents --json";
-        return Promise.resolve({ exitCode: known ? listing.exitCode : 127, stdout: known ? listing.text : "", stderr: "" });
+        const ran = { exitCode: known ? listing.exitCode : 127, stdout: known ? listing.text : "", stderr: "" };
+        if (known && listing.held) return new Promise((resolve) => (listing.release = () => resolve(ran)));
+        return Promise.resolve(ran);
       },
     },
     command: {
@@ -236,7 +277,9 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     commands,
     clears,
     reads,
+    readRanges,
     writes,
+    conversation,
     /** The session's activity record for the session ID `sessionId`, parsed; undefined where there is no file. */
     activity: (sessionId = SESSION): unknown => {
       try {
