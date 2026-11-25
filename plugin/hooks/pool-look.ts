@@ -75,17 +75,27 @@ async function writeLookRecord($: PoolEngine, only: string | undefined): Promise
     // A roster that cannot be read judges no slot (claude-session-pool-monitor::REQ-003/AC-01).
     if (roster === undefined || (only !== undefined && !roster.includes(only))) return;
     const standing = await standingEntries($, pool);
-    const entries: LookEntry[] = [];
+    let entries: LookEntry[] = [];
     if (roster.length > 0) {
       const sessions = await listedSessions($);
       // A listing that fails judges no slot (claude-session-pool-monitor::REQ-003/AC-01).
       if (sessions === undefined) return;
       const realPaths = await realPathsOf($, sessions, roster);
       const now = await $.clock.now();
-      for (const name of roster) {
-        const previous = standing.find((entry) => entry.name === name);
-        const entry = only === undefined || only === name ? await entryOf($, pool, sessions, realPaths, name, previous, now) : previous;
-        if (entry !== undefined) entries.push(entry);
+      const judge = (name: string) => entryOf($, pool, sessions, realPaths, name, standing.find((entry) => entry.name === name), now);
+      if (only === undefined) {
+        for (const name of roster) {
+          const entry = await judge(name);
+          if (entry !== undefined) entries.push(entry);
+        }
+      } else {
+        // claude-session-pool-monitor::REQ-004/AC-03: the other entries stay as they were, a name's that has left the
+        // roster since the last look among them.
+        const entry = await judge(only);
+        const at = standing.findIndex(({ name }) => name === only);
+        entries = [...standing];
+        if (entry !== undefined && at === -1) entries.push(entry);
+        else if (entry !== undefined) entries[at] = entry;
       }
     }
     await $.fs.write(pool.recordPath, `${JSON.stringify({ version: 1, directory: pool.directory, slots: entries })}\n`);

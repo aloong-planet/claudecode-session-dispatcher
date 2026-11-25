@@ -15,7 +15,7 @@ import { ClaudeCli } from "../src/adapters/claude-cli.ts";
 import { Pool } from "../src/pool.ts";
 import { RosterStore, type Slot } from "../src/roster.ts";
 import { FakeMac } from "./support/fake-mac.ts";
-import { LOOK_MS, modSetup } from "./support/mod-engine.ts";
+import { FROM_SERVER, LOOK_MS, modSetup } from "./support/mod-engine.ts";
 import { OTHER_SESSION, SESSION } from "./support/sessions.ts";
 import { cleanUpTemporaryDirectories } from "./support/temporary.ts";
 
@@ -306,17 +306,24 @@ describe("the entries of the look record", () => {
     ["no session ID", { sessionId: undefined }],
     ["a session ID not in the form of one", { sessionId: "not-a-session-id" }],
     ["a state the look record does not hold", { status: "starting" }],
-  ])("leaves the entry of a live slot as it was when the listing gives it %s", async (_, fields) => {
-    const { mod, entry, lookRecordText } = await dispatcher(["w1"]);
-    mod.listing.text = JSON.stringify([entry(501, "w1", W1, "idle")]);
+  ])("leaves the entry of a live slot as it was when the listing gives it %s, and judges the other slots", async (_, fields) => {
+    const { mod, entry, lookRecord, real } = await dispatcher(["w1", "w2"]);
+    mod.listing.text = JSON.stringify([entry(501, "w1", W1, "idle"), entry(502, "w2", W2, "idle")]);
     await mod.look();
-    const before = lookRecordText();
+    const lookedAt = new Date(mod.time.now).toISOString();
     mod.time.now += LOOK_MS;
-    mod.listing.text = JSON.stringify([{ ...entry(501, "w1", W1, "busy"), ...fields }]);
+    mod.listing.text = JSON.stringify([{ ...entry(501, "w1", W1, "busy"), ...fields }, entry(502, "w2", W2, "busy")]);
 
     await mod.look();
 
-    expect(lookRecordText()).toBe(before);
+    expect(lookRecord()).toEqual({
+      version: 1,
+      directory: real,
+      slots: [
+        { name: "w1", sessionId: W1, state: "idle", seenAt: lookedAt, worked: false },
+        { name: "w2", sessionId: W2, state: "busy", seenAt: new Date(mod.time.now).toISOString(), worked: false },
+      ],
+    });
   });
 
   it.each([
@@ -342,12 +349,20 @@ describe("the entries of the look record", () => {
 });
 
 describe("the entry of a slot a pool tool acted on", () => {
-  it.each(["clear", "open", "recycle"])("is written anew as soon as a call to %s that names the slot has returned", async (name) => {
-    const { mod, entry, lookRecord, real } = await dispatcher(["w1", "w2"]);
-    mod.listing.text = JSON.stringify([entry(501, "w1", W1, "busy"), entry(502, "w2", W2, "busy")]);
+  const ERROR_RESULT = { result: "w1 was not cleared", text: "w1 was not cleared", isError: true };
+  it.each(
+    ["clear", "open", "recycle"].flatMap((name) => [
+      [name, "its result", FROM_SERVER],
+      [name, "an error", ERROR_RESULT],
+    ]),
+  )("is written anew as soon as a call to %s that names the slot has returned with %s, and the other entries stay", async (name, _, fromCore) => {
+    const { mod, entry, lookRecord, stateDirectory, real } = await dispatcher(["w1", "w2", "w3"]);
+    mod.listing.text = JSON.stringify([entry(501, "w1", W1, "busy"), entry(502, "w2", W2, "busy"), entry(503, "w3", W5A, "busy")]);
     await mod.look();
     const lookedAt = new Date(mod.time.now).toISOString();
-    const call = await mod.startsCall(tool(name), undefined, { name: "w1" });
+    // w3 leaves the roster, as after a release, before the next look.
+    new RosterStore(stateDirectory, real).write(["w1", "w2"].map((slot): Slot => ({ name: slot, origin: "adopted" })));
+    const call = await mod.startsCall(tool(name), undefined, { name: "w1" }, fromCore);
     mod.listing.text = JSON.stringify([entry(601, "w1", W3, "idle"), entry(502, "w2", W2, "idle")]);
     mod.time.now += 20_000;
 
@@ -359,6 +374,28 @@ describe("the entry of a slot a pool tool acted on", () => {
       slots: [
         { name: "w1", sessionId: W3, state: "idle", seenAt: new Date(mod.time.now).toISOString(), worked: false },
         { name: "w2", sessionId: W2, state: "busy", seenAt: lookedAt, worked: false },
+        { name: "w3", sessionId: W5A, state: "busy", seenAt: lookedAt, worked: false },
+      ],
+    });
+  });
+
+  it("is added for a slot that had none when a call to open that names it has returned", async () => {
+    const { mod, entry, lookRecord, real } = await dispatcher(["w1", "w2"]);
+    mod.listing.text = JSON.stringify([entry(501, "w1", W1, "busy")]);
+    await mod.look();
+    const lookedAt = new Date(mod.time.now).toISOString();
+    const call = await mod.startsCall(tool("open"), undefined, { name: "w2" });
+    mod.listing.text = JSON.stringify([entry(501, "w1", W1, "idle"), entry(602, "w2", W2, "idle")]);
+    mod.time.now += 20_000;
+
+    await call.returns();
+
+    expect(lookRecord()).toEqual({
+      version: 1,
+      directory: real,
+      slots: [
+        { name: "w1", sessionId: W1, state: "busy", seenAt: lookedAt, worked: false },
+        { name: "w2", sessionId: W2, state: "idle", seenAt: new Date(mod.time.now).toISOString(), worked: false },
       ],
     });
   });
@@ -366,9 +403,10 @@ describe("the entry of a slot a pool tool acted on", () => {
   it.each([
     ["a subagent's call to clear", tool("clear"), "agent-1", { name: "w1" }],
     ["a call to clear that names no slot of the roster", tool("clear"), undefined, { name: "w9" }],
+    ["a call to open whose slot is not live and has no entry", tool("open"), undefined, { name: "w2" }],
     ["a call to status", tool("status"), undefined, {}],
-  ])("is not written after %s", async (_, called, agentId, args) => {
-    const { mod, entry, lookRecordText } = await dispatcher(["w1"]);
+  ])("leaves the record as it was after %s", async (_, called, agentId, args) => {
+    const { mod, entry, lookRecordText } = await dispatcher(["w1", "w2"]);
     mod.listing.text = JSON.stringify([entry(501, "w1", W1, "busy")]);
     await mod.look();
     const before = lookRecordText();

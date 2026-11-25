@@ -317,13 +317,14 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     /**
      * A call to a tool that Claude Code runs and that has not returned yet, as a Bash command that takes a while: the mod is
      * told of it, with its arguments beside `tool` as Claude Code 2.1.327 tells them, and has passed it on. `returns` lets
-     * the tool return and resolves to what the model receives.
+     * the tool return and resolves to what the model receives. `fromCore` is what Claude Code's `next(e)` resolves to,
+     * the tool's result or, for a tool that reported an error, a result with `isError`.
      */
-    startsCall: async (tool: string, agentId?: string, args: Record<string, unknown> = {}) => {
+    startsCall: async (tool: string, agentId?: string, args: Record<string, unknown> = {}, fromCore: unknown = FROM_SERVER) => {
       callsMade += 1;
       let release = () => {};
       const ran = new Promise<void>((resolve) => (release = resolve));
-      const answered = tell("tool.call", { ...args, tool, tool_use_id: `toolu_${callsMade}`, ...(agentId === undefined ? {} : { agentId }) }, FROM_SERVER, ran);
+      const answered = tell("tool.call", { ...args, tool, tool_use_id: `toolu_${callsMade}`, ...(agentId === undefined ? {} : { agentId }) }, fromCore, ran);
       await settle();
       return {
         returns: async () => {
