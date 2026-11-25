@@ -21,10 +21,12 @@ type Call = { tool: string; startedAt: number | undefined };
 export type Activity = {
   /** When the mod last found progress in the session; the time it was loaded until it finds some. */
   progressAt: number;
-  /** The session ID of the conversation in which a turn of the main conversation last started, as far as the mod knows. */
-  workedIn: string | undefined;
-  /** When the last turn of the main conversation ended, and in which conversation. */
-  lastTurnEnded: { sessionId: string; at: number } | undefined;
+  /** The session IDs of the conversations in which a turn of the main conversation has started, as far as the mod knows. */
+  worked: Set<string>;
+  /** When the last turn of the main conversation ended in each conversation, by its session ID. */
+  lastTurnEnded: Map<string, number>;
+  /** The session IDs whose standing record the mod has read since it was loaded. */
+  read: Set<string>;
   /** The tool calls of the main conversation that are running, in the order they started. */
   calls: Set<Call>;
   /** The token count of the session's context that the last look found; undefined where it found none. */
@@ -35,7 +37,7 @@ const DIRECTORY = ".claude-session-pool/activity";
 const SESSION_ID = /^[A-Za-z0-9-]+$/;
 const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
-export const newActivity = (): Activity => ({ progressAt: 0, workedIn: undefined, lastTurnEnded: undefined, calls: new Set(), tokens: undefined });
+export const newActivity = (): Activity => ({ progressAt: 0, worked: new Set(), lastTurnEnded: new Map(), read: new Set(), calls: new Set(), tokens: undefined });
 
 /** The path of the record of `sessionId`, where the session ID can name a file and the home directory is known. */
 async function recordPath($: ActivityEngine, sessionId: string): Promise<string | undefined> {
@@ -67,18 +69,22 @@ function isRecordOf(value: unknown, sessionId: string): boolean {
   );
 }
 
-/**
- * When Claude Code loads the mod (claude-session-pool-plugin::REQ-008/AC-03): the time of loading stands as the time of
- * progress, and a turn that the standing record of the present session ID says has started is taken from it.
- */
+/** When Claude Code loads the mod: the time of loading stands as the time of progress until the mod finds some. */
 export async function loadActivity($: ActivityEngine, activity: Activity): Promise<void> {
+  await progressed($, activity);
+}
+
+/**
+ * Before the mod first writes the record of a session ID, once it is loaded (claude-session-pool-plugin::REQ-008/AC-03): a
+ * turn that the standing record of that session ID says has started is taken from it, at load as when the session goes
+ * to another conversation, as by `/resume`.
+ */
+async function readStanding($: ActivityEngine, activity: Activity, sessionId: string, path: string): Promise<void> {
+  if (activity.read.has(sessionId)) return;
+  activity.read.add(sessionId);
   try {
-    activity.progressAt = Math.max(activity.progressAt, await $.clock.now());
-    const sessionId = await $.session.id();
-    const path = await recordPath($, sessionId);
-    if (path === undefined) return;
     const standing: unknown = JSON.parse(await $.fs.read(path));
-    if (isRecordOf(standing, sessionId) && (standing as { worked: boolean }).worked) activity.workedIn = sessionId;
+    if (isRecordOf(standing, sessionId) && (standing as { worked: boolean }).worked) activity.worked.add(sessionId);
   } catch {
     // No record that can be read: none stands.
   }
@@ -97,7 +103,7 @@ export async function progressed($: ActivityEngine, activity: Activity): Promise
 export async function turnStarted($: ActivityEngine, activity: Activity): Promise<void> {
   await progressed($, activity);
   try {
-    activity.workedIn = await $.session.id();
+    activity.worked.add(await $.session.id());
   } catch {
     // Without the session ID the mod cannot tell which conversation the turn is of.
   }
@@ -108,7 +114,7 @@ export async function turnEnded($: ActivityEngine, activity: Activity): Promise<
   try {
     const at = await $.clock.now();
     activity.progressAt = Math.max(activity.progressAt, at);
-    activity.lastTurnEnded = { sessionId: await $.session.id(), at };
+    activity.lastTurnEnded.set(await $.session.id(), at);
   } catch {
     // Without the time or the session ID the end is not recorded.
   }
@@ -158,16 +164,17 @@ export async function writeActivity($: ActivityEngine, activity: Activity, turnR
     const sessionId = await $.session.id();
     const path = await recordPath($, sessionId);
     if (path === undefined) return;
+    await readStanding($, activity, sessionId, path);
     const writtenAt = await $.clock.now();
     const running = [...activity.calls].filter((call): call is Call & { startedAt: number } => call.startedAt !== undefined);
     const longest = running.reduce<(typeof running)[number] | undefined>((first, call) => (first === undefined || call.startedAt < first.startedAt ? call : first), undefined);
-    const ended = activity.lastTurnEnded?.sessionId === sessionId ? activity.lastTurnEnded.at : undefined;
+    const ended = activity.lastTurnEnded.get(sessionId);
     const record = {
       version: 1,
       sessionId,
       writtenAt: iso(writtenAt),
       turnRunning,
-      worked: activity.workedIn === sessionId,
+      worked: activity.worked.has(sessionId),
       progressAt: iso(activity.progressAt),
       ...(ended === undefined ? {} : { lastTurnEndedAt: iso(ended) }),
       ...(longest === undefined ? {} : { toolCall: { tool: longest.tool, startedAt: iso(longest.startedAt) } }),

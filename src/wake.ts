@@ -75,7 +75,8 @@ export class WakeState {
         const stats = statSync(path);
         if (stats.isFile() && stats.mtimeMs < cutoff) rmSync(path, { force: true });
       } catch {
-        // Gone already, or written again by its session meanwhile: left alone.
+        // Gone already, or its state cannot be read: left alone. A record its session writes again between the look at its time and its
+        // deletion is deleted; the mod writes it again at its next look.
       }
     }
   }

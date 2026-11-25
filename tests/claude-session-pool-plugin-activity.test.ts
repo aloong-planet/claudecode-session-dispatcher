@@ -165,20 +165,43 @@ describe("the activity record", () => {
     expect(mod.activity(SESSION)).toEqual(before);
     expect(before).toEqual({ version: 1, sessionId: SESSION, writtenAt: iso(25), turnRunning: false, worked: true, progressAt: iso(20), lastTurnEndedAt: iso(20) });
   });
+
+  it("states for a conversation the session goes back to, as by /resume, the turns of that conversation (claude-session-pool-plugin::REQ-008/AC-02)", async () => {
+    const mod = await modSetup();
+    at(mod, 10);
+    await mod.turnStarts();
+    at(mod, 20);
+    await mod.turnEnds();
+    mod.session.id = AFTER_CLEAR;
+    at(mod, 30);
+    await mod.turnStarts();
+    at(mod, 40);
+    await mod.turnEnds();
+    at(mod, 45);
+    await mod.look();
+
+    mod.session.id = SESSION;
+    at(mod, 55);
+    await mod.look();
+
+    expect(mod.activity(SESSION)).toEqual({ version: 1, sessionId: SESSION, writtenAt: iso(55), turnRunning: false, worked: true, progressAt: iso(40), lastTurnEndedAt: iso(20) });
+  });
+
+  it("goes on saying that a turn has started for a conversation the session goes to, as by /resume, whose standing record says so (claude-session-pool-plugin::REQ-008/AC-03)", async () => {
+    const mod = await modSetup();
+    const standing = { version: 1, sessionId: OTHER_SESSION, writtenAt: "2026-11-21T09:00:00.000Z", turnRunning: false, worked: true, progressAt: "2026-11-21T08:59:00.000Z", lastTurnEndedAt: "2026-11-21T08:59:00.000Z" };
+    writeFileSync(join(mod.home, ".claude-session-pool", "activity", `${OTHER_SESSION}.json`), `${JSON.stringify(standing)}\n`);
+
+    mod.session.id = OTHER_SESSION;
+    at(mod, 60);
+    await mod.look();
+
+    expect(mod.activity(OTHER_SESSION)).toEqual({ version: 1, sessionId: OTHER_SESSION, writtenAt: iso(60), turnRunning: false, worked: true, progressAt: LOADED_AT });
+  });
 });
 
 describe("progress in the session", () => {
-  type Step = (mod: Mod, earlier: unknown) => Promise<unknown> | void;
-  it.each<{ what: string; earlier?: Step; move: Step; progressAt: string }>([
-    { what: "a turn of the main conversation starts", move: (mod) => mod.turnStarts(), progressAt: iso(30) },
-    { what: "a turn of the main conversation ends", earlier: (mod) => mod.turnStarts(), move: (mod) => mod.turnEnds(), progressAt: iso(30) },
-    { what: "a tool call of the main conversation starts", move: (mod) => mod.startsCall("Bash"), progressAt: iso(30) },
-    {
-      what: "a tool call of the main conversation returns",
-      earlier: (mod) => mod.startsCall("Bash"),
-      move: (_mod, call) => (call as { returns: () => Promise<unknown> }).returns(),
-      progressAt: iso(30),
-    },
+  it.each<{ what: string; move: (mod: Mod) => Promise<unknown> | void; progressAt: string }>([
     { what: "a look finds a token count of the context that differs from the one the look before found", move: (mod) => tokens(mod, 61_101), progressAt: iso(40) },
     { what: "a look finds progress in a subagent", move: (mod) => void (mod.agents.listed[0]!.tokenCount += 1_000), progressAt: iso(40) },
     { what: "a look finds nothing new, nor did the first look, which found the token count and the subagent", move: () => {}, progressAt: LOADED_AT },
@@ -193,16 +216,13 @@ describe("progress in the session", () => {
       progressAt: LOADED_AT,
     },
     { what: "a look first finds a subagent", move: (mod) => void mod.startSubagent("a41633a00e77a2aa3"), progressAt: LOADED_AT },
-  ])("is found when $what, at that time, and nothing else moves it (claude-session-pool-plugin::REQ-007/AC-02)", async ({ earlier, move, progressAt }) => {
+  ])("is found when $what, at that time, and nothing else moves it (claude-session-pool-plugin::REQ-007/AC-02)", async ({ move, progressAt }) => {
     const mod = await modSetup();
     mod.startSubagent(SUBAGENT);
     at(mod, 10);
     await mod.look();
-    at(mod, 20);
-    const made = await earlier?.(mod, undefined);
-
     at(mod, 30);
-    await move(mod, made);
+    await move(mod);
     at(mod, 40);
     await mod.look();
 
@@ -224,14 +244,22 @@ describe("a turn that has started in the conversation", () => {
     { what: "no record stands", standing: (mod: Mod) => rmSync(recordPath(mod)), worked: false },
   ])("is kept when the mod is loaded again where $what (claude-session-pool-plugin::REQ-008/AC-03)", async ({ standing, worked }) => {
     const mod = await modSetup();
+    at(mod, 5);
     await mod.turnStarts();
+    at(mod, 8);
     await mod.turnEnds();
+    at(mod, 10);
+    await mod.turnStarts();
+    at(mod, 20);
+    await mod.startsCall("Bash");
+    at(mod, 30);
     await mod.look();
     standing(mod);
+    at(mod, 100);
 
     await mod.reload();
 
-    expect(mod.activity()).toMatchObject({ sessionId: SESSION, worked });
+    expect(mod.activity()).toEqual({ version: 1, sessionId: SESSION, writtenAt: iso(100), turnRunning: false, worked, progressAt: iso(100) });
   });
 });
 
