@@ -14,15 +14,14 @@
  *
  * Gaps: two dispatcher sessions in the same directory (claude-session-pool-monitor, "Two dispatcher sessions") need two
  * mods sharing one home directory and one roster, which the fake engine does not set up; each mod keeps its own state,
- * reads its own transcript and reports to its own session. A pool tool's call that starts and returns while one look runs
- * is not driven: the fake engine lets each look run to its end before the next event, so no look is made across a call.
+ * reads its own transcript and reports to its own session.
  */
 import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RosterStore, type Slot } from "../src/roster.ts";
 import { DISPATCHER_PID, dispatcher, type Mod } from "./support/dispatcher-mod.ts";
-import { AFTER_CLEAR, FROM_SERVER, LOOK_MS, READ_LIMIT, modSetup } from "./support/mod-engine.ts";
+import { AFTER_CLEAR, FROM_SERVER, LOOK_MS, READ_LIMIT, modSetup, settle } from "./support/mod-engine.ts";
 import { OTHER_SESSION, SESSION } from "./support/sessions.ts";
 import { cleanUpTemporaryDirectories } from "./support/temporary.ts";
 
@@ -533,6 +532,17 @@ describe("the slots gone at the first look after the mod is loaded (claude-sessi
     ]);
   });
 
+  it("leave out a slot that a pool tool is acting on at that look (claude-session-pool-monitor, \"A pool tool\")", async () => {
+    const pool = await dispatcher(["wa", "wb"]);
+    const call = await pool.mod.startsCall(tool("restore"), undefined, { names: ["wa"] });
+    await pool.looks();
+    await call.returns();
+
+    await pool.looks(3);
+
+    expect(pool.mod.prompts).toEqual([report("- No live session in the pool directory answers to these slots of the roster: wb.")]);
+  });
+
   it("leave out the second sentence when restore brings back none of them", async () => {
     const pool = await dispatcher(["wa"]);
 
@@ -930,6 +940,7 @@ describe("a stopped slot (claude-session-pool-monitor::US-001/AC-07, REQ-002)", 
 });
 
 describe("an unrecorded slot (claude-session-pool-monitor::US-001/AC-08)", () => {
+  const UNRECORDED = "- wa: its session writes no activity record, so whether it makes progress is not known.";
   it.each([
     ["has no activity record", async () => {}],
     ["has the record of another session ID", async (pool: Pool) => void (await (await pool.worker(W1, OTHER_SESSION)).loads())],
@@ -958,7 +969,20 @@ describe("an unrecorded slot (claude-session-pool-monitor::US-001/AC-08)", () =>
     expect(pool.mod.prompts).toEqual([report("- wa: its session writes no activity record, so whether it makes progress is not known.")]);
   });
 
-  it("is a live slot whose listing gives no session ID in form, judged otherwise as any live slot (claude-session-pool-monitor, \"no session ID in the form\")", async () => {
+  it("is reported again once the listing gives its slot a new session ID, as after a clear, that writes no record either (claude-session-pool-monitor::US-001/AC-09)", async () => {
+    const pool = await dispatcher(["wa"]);
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle")]);
+    await pool.looks(3);
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W2, "idle")]);
+    await pool.looks(2);
+    const at2 = pool.mod.prompts.length;
+    await pool.looks();
+
+    expect(at2).toBe(1);
+    expect(pool.mod.prompts).toEqual([UNRECORDED, UNRECORDED].map((line) => report(line)));
+  });
+
+  it("is a live slot whose listing gives no session ID in form: judged as unrecorded and gone, and not as waiting, which needs one session ID (claude-session-pool-monitor, \"no session ID in the form\", US-001/AC-05)", async () => {
     const pool = await dispatcher(["wa", "wb"]);
     await (await pool.worker(W2)).loads(-30 * MINUTE);
     pool.mod.listing.text = JSON.stringify([
@@ -1022,6 +1046,22 @@ describe("a pool that cannot be seen (claude-session-pool-monitor::REQ-003/AC-02
     expect(listing).toEqual([report("- The monitor could not see the pool for 10 minutes: the sessions on this Mac could not be listed.")]);
     expect(pool.mod.prompts).toEqual(listing);
     expect(roster.mod.prompts).toEqual([report("- The monitor could not see the pool for 10 minutes: the roster could not be read.")]);
+  });
+
+  it("is reported again when, after a look that judges slots, 10 more looks in a row judge no slot", async () => {
+    const pool = await dispatcher(["wa"]);
+    await (await pool.worker(W1)).loads();
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle")]);
+    pool.mod.listing.exitCode = 1;
+    await pool.looks(10);
+    pool.mod.listing.exitCode = 0;
+    await pool.looks();
+    pool.mod.listing.exitCode = 1;
+
+    await pool.looks(10);
+
+    const line = report("- The monitor could not see the pool for 10 minutes: the sessions on this Mac could not be listed.");
+    expect(pool.mod.prompts).toEqual([line, line]);
   });
 
   it("counts anew after a look that judges slots, passes over looks at which the session is not taken as a dispatcher session, and says nothing when it sees the pool again", async () => {
@@ -1170,16 +1210,44 @@ describe("a slot a pool tool is acting on (claude-session-pool-monitor, \"A pool
     expect(pool.mod.prompts).toEqual([]);
   });
 
-  it("starts the slot's runs anew once a call that acted on it has returned", async () => {
-    const pool = await waiting();
-    await pool.looks();
+  it.each<[string, (pool: Pool) => Promise<void>, number, string]>([
+    ["waiting", async (pool) => void (await (await pool.worker(W1)).loads()), 2, "- wa: waiting for permission prompt."],
+    ["unrecorded", () => Promise.resolve(), 3, "- wa: its session writes no activity record, so whether it makes progress is not known."],
+  ])("starts the slot's run of looks %s anew once a call that acted on it has returned", async (state, record, due, line) => {
+    const pool = await dispatcher(["wa"]);
+    await record(pool);
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, state === "waiting" ? "waiting" : "idle", { waitingFor: "permission prompt" })]);
+    await pool.looks(due - 1);
     await (await pool.mod.startsCall(tool("compact"), undefined, { name: "wa" })).returns();
-    await pool.looks();
+    await pool.looks(due - 1);
     const after = pool.mod.prompts.length;
     await pool.looks();
 
     expect(after).toBe(0);
-    expect(pool.mod.prompts).toEqual([report("- wa: waiting for permission prompt.")]);
+    expect(pool.mod.prompts).toEqual([report(line)]);
+  });
+
+  it.each([
+    ["started before the look", true],
+    ["started while the look waited for the listing", false],
+  ])("is not reported gone after a call to close %s, which returned before the look judged the slot", async (_, startsBefore) => {
+    const pool = await dispatcher(["wa"]);
+    await (await pool.worker(W1)).loads();
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle")]);
+    await pool.looks();
+    const early = startsBefore ? await pool.mod.startsCall(tool("close"), undefined, { name: "wa" }) : undefined;
+    pool.mod.listing.held = true;
+    await pool.looks();
+    const call = early ?? (await pool.mod.startsCall(tool("close"), undefined, { name: "wa" }));
+    pool.mod.listing.text = "[]";
+    await call.returns();
+    pool.mod.listing.held = false;
+    pool.mod.listing.release();
+    await settle();
+
+    await pool.looks(3);
+
+    expect(pool.mod.prompts).toEqual([]);
   });
 
   it.each(CONDITIONS)("is not reported again as %s, while that lasts, once a call to %s that named it has run across a look and returned (claude-session-pool-monitor::US-001/AC-09)", async (_, name, condition, line) => {

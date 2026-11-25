@@ -140,9 +140,10 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   mkdirSync(root.path);
   /**
    * What the commands the mod runs print: `claude agents --json` prints `listing.text` and exits with `listing.exitCode`;
-   * `fails`: the command cannot be started. `runs` holds the argument vector of every command the mod ran.
+   * `fails`: the command cannot be started. `held`: the listing has run, and what it printed is not given to the mod until
+   * `release` is called. `runs` holds the argument vector of every command the mod ran.
    */
-  const listing = { text: "[]", exitCode: 0, fails: false };
+  const listing = { text: "[]", exitCode: 0, fails: false, held: false, release: () => {} };
   const runs: string[][] = [];
   const engine = {
     ui: { log: (text: string, options?: unknown) => void logs.push({ text, options }) },
@@ -224,7 +225,9 @@ export async function modSetup({ interactive = true, told = true, registerFails 
         runs.push([...argv]);
         if (listing.fails) return Promise.reject(new Error("cc-session-pool: $.process.run: claude: command not found"));
         const known = argv.join(" ") === "claude agents --json";
-        return Promise.resolve({ exitCode: known ? listing.exitCode : 127, stdout: known ? listing.text : "", stderr: "" });
+        const ran = { exitCode: known ? listing.exitCode : 127, stdout: known ? listing.text : "", stderr: "" };
+        if (known && listing.held) return new Promise((resolve) => (listing.release = () => resolve(ran)));
+        return Promise.resolve(ran);
       },
     },
     command: {
