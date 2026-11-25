@@ -559,13 +559,23 @@ export class Pool {
       : state;
   }
 
-  /** Records a new session the server opened for the slot; what an earlier session of the slot left in the roster goes. */
+  /**
+   * Records a new session the server opened for the slot; what an earlier session of the slot left in the roster goes.
+   * Where no session alone answers to the name (`pid` undefined), no new session is recorded, so the conversation
+   * `recycle` ended stays recorded (docs/specs/claude-session-pool.md, "Roster file").
+   */
   private registerOpened(name: string, pid: number | undefined, { model, permissionMode }: StartedWith): Promise<void> {
-    const slot: Slot = { name, origin: "opened" };
-    if (pid !== undefined) slot.pid = pid;
-    if (model !== undefined) slot.model = model;
-    if (permissionMode !== undefined) slot.permissionMode = permissionMode;
-    return this.updateRoster((slots) => [...slots.filter((candidate) => candidate.name !== name), slot]);
+    return this.updateRoster((slots) => {
+      const slot: Slot = { name, origin: "opened" };
+      if (pid !== undefined) slot.pid = pid;
+      else {
+        const endedSessionId = slots.find((candidate) => candidate.name === name)?.endedSessionId;
+        if (endedSessionId !== undefined) slot.endedSessionId = endedSessionId;
+      }
+      if (model !== undefined) slot.model = model;
+      if (permissionMode !== undefined) slot.permissionMode = permissionMode;
+      return [...slots.filter((candidate) => candidate.name !== name), slot];
+    });
   }
 
   private removeSlot(name: string): Promise<void> {

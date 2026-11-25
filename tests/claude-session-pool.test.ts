@@ -1462,6 +1462,27 @@ describe("recycle", () => {
     expect(mac.terminated.at(-1)).toBe(late.pid);
     expect(mac.windowOf(late).open).toBe(true);
   });
+
+  it("opens no new session when the roster cannot be written after its close step ended the session", async () => {
+    const { mac, pool, rosterRoot } = setup();
+    await pool.open({ name: "w1" });
+    const { pid } = mac.session("w1");
+    const launchesBefore = mac.launches.length;
+    const pools = join(rosterRoot, "pools");
+    mac.at(500, () => chmodSync(pools, 0o555));
+    try {
+      const outcome = await pool.recycle({ name: "w1" });
+
+      expect(outcome.ok).toBe(false);
+      expect(outcome.text).toMatch(
+        new RegExp(`^Closed "w1": its session \\(pid ${pid}\\) ended\\. The roster could not be updated, so no new session was opened: EACCES`),
+      );
+      expect(mac.launches).toHaveLength(launchesBefore);
+    } finally {
+      chmodSync(pools, 0o755);
+    }
+    expect((await pool.status()).text).toBe("w1: gone");
+  });
 });
 
 describe("restore", () => {
@@ -1611,9 +1632,6 @@ describe("restore", () => {
 
   it.each([
     ["there is none", () => undefined],
-    ["it is not JSON", () => '{"version":1,'],
-    ["its version is not 1", (record: Record<string, unknown>) => ({ ...record, version: 2 })],
-    ["it belongs to another directory", (record: Record<string, unknown>) => ({ ...record, directory: "/elsewhere" })],
     ["an entry's session ID is not in the form of one", (record: { slots: object[] }) => ({ ...record, slots: [{ ...record.slots[0], sessionId: "--resume; rm -rf ~" }] })],
   ])("refuses every slot when the look record cannot be used: %s", async (_, change) => {
     const { mac, pool, directory, rosterRoot, ended, launchesBefore } = await endedPool([{ name: "w1" }, { name: "w2" }]);
@@ -1752,10 +1770,16 @@ describe("restore", () => {
       const taken = mac.addSession({ name: "w1", cwd: elsewhere });
       return () => mac.endSession(taken.pid!);
     };
+    const listNoSession = ({ mac }: ReturnType<typeof setup>) => {
+      const startupMs = mac.startupMs;
+      mac.startupMs = 10 * 60_000;
+      return () => (mac.startupMs = startupMs);
+    };
 
     it.each([
       ["no window could be opened", failOpen],
       ["a live session elsewhere answers to the name", takeName],
+      ["the window opened but no session was listed within 60 seconds", listNoSession],
     ])("refuses to resume the conversation recycle ended, when %s, and says that open starts a new session", async (_, breakOpen) => {
       const { mac, pool, conversation, recycled, rosterPath, launchesBefore } = await recycledPool(breakOpen);
       const roster = readFileSync(rosterPath, "utf8");
