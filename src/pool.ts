@@ -301,9 +301,11 @@ export class Pool {
         ? `Its window was left open. "${name}" stays in the roster.`
         : `Its window was left open and "${name}" was not added to the roster.`;
     const listing = seen.state === "unknown" ? ` The sessions could not be listed: ${seen.error}` : "";
-    const notResumed = other
-      ? ` ${other.sessionId === undefined ? "A session with no session ID" : `Session ${other.sessionId}`} answers to "${name}", not session ${resumes}, which the look record names; the conversation was not resumed.`
-      : "";
+    const notResumed = !other
+      ? ""
+      : other.sessionId === undefined
+        ? ` A session that the listing gives no session ID answers to "${name}", so it is not confirmed that it resumed session ${resumes}, which the look record names.`
+        : ` Session ${other.sessionId} answers to "${name}", not session ${resumes}, which the look record names; the conversation was not resumed.`;
     throw new Refusal(
       `A window was opened for "${name}", but its session was not idle after ${LIMITS.openReadyMs / 1000} seconds. ${kept}${notResumed}${listing} The window shows:\n${quoted(visible)}`,
     );
@@ -575,8 +577,9 @@ export class Pool {
 
   /**
    * Records a new session the server opened for the slot; what an earlier session of the slot left in the roster goes.
-   * Where no session alone answers to the name (`pid` undefined), no new session is recorded, so the conversation
-   * `recycle` ended stays recorded (docs/specs/claude-session-pool.md, "Roster file").
+   * Where no session is recorded (`pid` undefined: none alone answers to the name, or, for `restore`, the one that
+   * answers has not the entry's session ID), the conversation `recycle` ended stays recorded
+   * (docs/specs/claude-session-pool.md, "Roster file").
    */
   private registerOpened(name: string, pid: number | undefined, { model, permissionMode }: StartedWith): Promise<void> {
     return this.updateRoster((slots) => {

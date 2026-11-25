@@ -1678,9 +1678,9 @@ describe("restore", () => {
   });
 
   it.each([
-    ["another session ID", OTHER_SESSION, `Session ${OTHER_SESSION}`],
-    ["no session ID", undefined, "A session with no session ID"],
-  ])("names what answers instead, ends nothing and records no session, when only a session with %s answers at the limit", async (_, listedAs, named) => {
+    ["another session ID", OTHER_SESSION, (entry: string) => `Session ${OTHER_SESSION} answers to "w1", not session ${entry}, which the look record names; the conversation was not resumed.`],
+    ["no session ID", undefined, (entry: string) => `A session that the listing gives no session ID answers to "w1", so it is not confirmed that it resumed session ${entry}, which the look record names.`],
+  ])("says what answers instead, ends nothing and records no session, when only a session with %s answers at the limit", async (_, listedAs, answers) => {
     const { mac, pool, ended, rosterPath } = await endedPool([{ name: "w1" }]);
     mac.resumedUnder = OTHER_SESSION;
     const calledAt = mac.now;
@@ -1690,13 +1690,28 @@ describe("restore", () => {
 
     expect(outcome.ok).toBe(false);
     expect(outcome.text).toContain(
-      `w1: not restored. A window was opened for "w1", but its session was not idle after 60 seconds. Its window was left open. "w1" stays in the roster. ${named} answers to "w1", not session ${ended.w1}, which the look record names; the conversation was not resumed. The window shows:`,
+      `w1: not restored. A window was opened for "w1", but its session was not idle after 60 seconds. Its window was left open. "w1" stays in the roster. ${answers(ended.w1!)} The window shows:`,
     );
     expect(mac.now - calledAt).toBe(60_000);
     const other = mac.session("w1");
     expect(mac.terminated).not.toContain(other.pid);
     expect(mac.windowOf(other).open).toBe(true);
     expect(rosterSlots(rosterPath)).toEqual([{ name: "w1", origin: "opened", model: "opus", permissionMode: "auto" }]);
+  });
+
+  it("resumes the entry's conversation after an open of the gone slot opened a window in which no session was listed in time", async () => {
+    const { mac, pool, ended, rosterPath } = await endedPool([{ name: "w1" }]);
+    const startupMs = mac.startupMs;
+    mac.startupMs = 10 * 60_000;
+    const opened = await pool.open({ name: "w1" });
+    mac.startupMs = startupMs;
+
+    const outcome = await pool.restore({ names: ["w1"] });
+
+    expect(opened.ok).toBe(false);
+    expect(rosterSlots(rosterPath)).toEqual([expect.objectContaining({ name: "w1", pid: mac.session("w1").pid })]);
+    expect(outcome.ok).toBe(true);
+    expect(mac.launches.at(-1)!.argv.slice(3, 5)).toEqual(["--resume", ended.w1]);
   });
 
   it("sends the session it starts nothing, and leaves no file for it", async () => {
