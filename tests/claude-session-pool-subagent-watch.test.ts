@@ -9,7 +9,7 @@
  * 2.1.327 (the ticket's delivery note) and are to be measured again when Claude Code changes how it lists agents.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { modSetup } from "./support/mod-engine.ts";
+import { modSetup, type ListedAgent } from "./support/mod-engine.ts";
 import { cleanUpTemporaryDirectories } from "./support/temporary.ts";
 
 afterEach(cleanUpTemporaryDirectories);
@@ -56,10 +56,21 @@ describe("a look", () => {
   it.each([
     { what: "lists it as waiting", at6: (mod: Mod) => void (mod.agents.listed[0]!.status = "waiting"), at7: (mod: Mod) => void (mod.agents.listed[0]!.status = "running") },
     {
-      what: "is not given the list by Claude Code, and reports nothing of that (claude-session-pool-subagent-watch, \"the list of subagents is not given\")",
+      what: "is not given the list by Claude Code, and reports nothing of that (claude-session-pool-subagent-watch, \"does not give the list of subagents\")",
       at6: (mod: Mod) => void (mod.agents.fails = true),
       at7: (mod: Mod) => void (mod.agents.fails = false),
     },
+    (() => {
+      let kept: ListedAgent[] = [];
+      return {
+        what: "is given something that is not a list, and reports nothing of that (claude-session-pool-subagent-watch, \"does not give the list of subagents\")",
+        at6: (mod: Mod) => {
+          kept = mod.agents.listed;
+          mod.agents.listed = { agents: kept } as never;
+        },
+        at7: (mod: Mod) => void (mod.agents.listed = kept),
+      };
+    })(),
   ])("that $what starts the count of a subagent anew (claude-session-pool-subagent-watch::US-001/AC-02)", async ({ at6, at7 }) => {
     const mod = await modSetup();
     mod.startSubagent(SUBAGENT);

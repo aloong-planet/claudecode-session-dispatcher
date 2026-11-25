@@ -1,6 +1,6 @@
 # claude-session-pool
 
-A Claude Code plugin whose MCP server lets one Claude Code session open, reset, compact and close a set of interactive Claude Code sessions running in Terminal windows on the same Mac, and offers every session that loads it a tool with which that session compacts its own conversation; the plugin's mod, or where it does not run a hook of the plugin, wakes that session afterwards. Where the plugin's mod runs and Claude Code accepts the mod's tool, the plugin also offers every session a tool that reports the size of its own context. It exists so that a session handing out tickets no longer needs a person to create its worker sessions or to type `/clear` and `/compact` into them.
+A Claude Code plugin whose MCP server lets one Claude Code session open, reset, compact and close a set of interactive Claude Code sessions running in Terminal windows on the same Mac, and offers every session that loads it a tool with which that session compacts its own conversation; the plugin's mod, or where it does not run a hook of the plugin, wakes that session afterwards. Where the plugin's mod runs and Claude Code accepts the mod's tool, the plugin also offers every session a tool that reports the size of its own context. In an interactive session the plugin's mod also watches the session's subagents, and starts a turn there with a report when one of them needs attention. It exists so that a session handing out tickets no longer needs a person to create its worker sessions or to type `/clear` and `/compact` into them.
 
 ## Language
 
@@ -47,3 +47,7 @@ _Avoid_: marker, hook log
 **Mod**:
 The plugin's hooks module: code of the plugin that Claude Code loads into a session's own process. It is not one of the plugin's hooks, which are commands that Claude Code starts as separate processes.
 _Avoid_: hook module, extension, in-process hook
+
+**Look**:
+One pass of the plugin's mod over what it watches in its session, made on a timer and not by the model. It is not a call to `status`, which a dispatcher session makes in a turn of its own.
+_Avoid_: poll, check, scan

@@ -1,9 +1,10 @@
 # claudecode-session-dispatcher
 
-`cc-session-pool` is a Claude Code plugin with three jobs:
+`cc-session-pool` is a Claude Code plugin with four jobs:
 
 - **Every session gets the tool `compact_self`.** A session uses it to compact its own conversation, and is woken afterwards so that it carries on, without anyone typing `/compact` or telling it to go on.
 - **Every session in which the plugin's mod runs gets the tool `context_usage`.** A session uses it to learn the size of its own context, as Claude Code's status line has it. Where Claude Code refuses the mod's tool, as it does in a session started with `--tools ""`, the session goes without it, and the reason is in Claude Code's debug log (`claude --debug`).
+- **Every interactive session in which the plugin's mod runs is told of a stuck subagent.** Once a minute the mod looks at the session's subagents, without a model request. When neither the transcript nor the token count of one has changed for 11 minutes, the mod starts a turn in the session with a report that names it. It ends no subagent, and a report waits while a turn of the session is running.
 - **A dispatcher session gets nine more tools.** With them it manages a pool of worker sessions that run in Terminal windows. It can open them, reset or compact their conversations, read their state, and close or replace them.
 
 What the plugin does, in full, is in the specs, listed in [docs/specs/README.md](docs/specs/README.md).
@@ -11,7 +12,7 @@ What the plugin does, in full, is in the specs, listed in [docs/specs/README.md]
 ## Requirements
 
 - **macOS with the Terminal app.** Worker sessions run in Terminal windows. When a session's call to `compact_self` is handled by the plugin's server rather than its mod, or the dispatcher session's `clear` is typed instead of left as an order (see [Tools](#tools)), the session must run in a Terminal window too. The plugin opens and types into Terminal windows through Terminal's scripting interface; when macOS refuses that automation request, the tool returns the error.
-- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325. `clear` through the mod was measured on 2.1.327 only, with the screen unlocked and with it locked for up to five minutes; it has not been measured on earlier versions or with a longer lock.
+- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325. `clear` through the mod was measured on 2.1.327 only, with the screen unlocked and with it locked for up to five minutes; it has not been measured on earlier versions or with a longer lock. What the subagent watch rests on was measured on 2.1.327 only.
 - **Node.js 22.18 or later**, found on the `PATH` of the sessions that load the plugin. The server and the hooks run on it directly, with no build step.
 - **pnpm**, to install the packages the server needs.
 
