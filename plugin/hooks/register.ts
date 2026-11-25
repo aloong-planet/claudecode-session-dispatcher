@@ -20,29 +20,39 @@
 // such tool, nor has one in which Claude Code refuses it, such as a session with no built-in tools: there the mod
 // writes Claude Code's reason into Claude Code's debug log alone.
 //
-// The module imports nothing: Claude Code gives a mod neither Node's modules nor the repository's packages. The types
+// In an interactive session it also looks at the session's subagents once a minute, without a model request, and
+// starts a turn with a report when one of them makes no progress for 11 minutes (subagent-watch.ts).
+//
+// The module imports nothing but the file of the plugin beside it, which Claude Code 2.1.327 loads with it: Claude Code
+// gives a mod neither Node's modules nor the repository's packages. The types
 // below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322; what the
 // clear order uses (the watch paths of classic.SessionStart, classic.FileChanged and $.command.run) was measured on 2.1.327.
 
+import { lookAtSubagents, reportText, type Watch, type WatchEngine } from "./subagent-watch.ts";
+
 /** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
 type ContextFigures = { tokens?: number; window: number; percent?: number };
-type Engine = {
+type Engine = WatchEngine & {
   env: { get: (name: string) => Promise<string | undefined> };
   /** Reads a file's text; rejects when it cannot. */
-  fs: { read: (path: string) => Promise<string> };
+  fs: WatchEngine["fs"] & { read: (path: string) => Promise<string> };
   /** Runs a slash command as if the user typed it, once the session is idle. Rejects when Claude Code does not take it. */
   command: { run: (args: { command: string }) => Promise<unknown> };
   /** Declares a tool of the mod's own, which the model calls as `mcp__<plugin>__<name>`. */
   tool: { register: (spec: { name: string; description: string; inputSchema: Record<string, unknown>; isDeferred: boolean }) => Promise<unknown> };
-  session: {
+  session: WatchEngine["session"] & {
     usage: () => Promise<{ context: ContextFigures }>;
     id: () => Promise<string>;
     /** Rejects while a turn is in progress, and when the user cancels the compaction. */
     compact: (args: Record<string, never>) => Promise<{ skip?: string }>;
   };
-  /** Starts a turn with `text` once the session is idle. */
-  prompt: { submit: (args: { text: string }) => Promise<unknown> };
-  clock: { now: () => Promise<number>; after: (ms: number, run: () => void) => unknown };
+  /**
+   * Starts a turn with `text` once the session is idle. Resolves with the prompt once the turn has started, or with `drop`
+   * when Claude Code does not take it, as after the owner stopped the session and typed nothing since (measured on 2.1.327).
+   */
+  prompt: { submit: (args: { text: string }) => Promise<{ drop?: string }> };
+  /** `every` calls `run` at its interval while a turn runs and while none does (measured on 2.1.327). */
+  clock: { now: () => Promise<number>; after: (ms: number, run: () => void) => unknown; every: (ms: number, run: () => void) => unknown };
   /** Appends a line to the transcript, or with `{ to: "debug" }` to Claude Code's debug log alone (measured on 2.1.325). */
   ui: { log: (text: string, options?: { to?: "transcript" | "debug" }) => void };
 };
@@ -92,6 +102,8 @@ const ORDER_LIFETIME_MS = 60_000;
 const SESSION_ID = /^[A-Za-z0-9-]+$/;
 const RETRY_MS = 2_000;
 const MAX_RETRIES = 5;
+/** claude-session-pool-plugin::REQ-004: the mod looks once a minute. */
+const LOOK_MS = 60_000;
 
 /** A compaction the session asked for and that has not run yet, with the conversation it was asked for. */
 type Request = { sessionId: string };
@@ -110,10 +122,13 @@ type State = {
   due: number;
   /** The session ID that the mod asked Claude Code to clear the session of, so that its order is acted on once. */
   clearing: string | undefined;
+  /** Whether a report the mod submitted has not been answered yet. */
+  reporting: boolean;
+  watch: Watch;
 };
 
-// Claude Code lets a mod pass `$` only to functions declared at the top of the module, so these two are not closures
-// of `register` and take the session's state as an argument.
+// Claude Code lets a mod pass `$` only to functions declared at the top of a module (of an imported one as well, as
+// measured on 2.1.327), so these are not closures of `register` and take the session's state as an argument.
 
 async function wake($: Engine, text: string): Promise<void> {
   try {
@@ -215,6 +230,26 @@ async function compact($: Engine, state: State, asked: Request, turnEnd: number,
   await wake($, notCompleted(reported));
 }
 
+/**
+ * A look (claude-session-pool-plugin::REQ-004). What is due is reported at a look at which no turn runs, no compaction is
+ * held or running (its request stands until it has run) and no report is waiting for its answer
+ * (claude-session-pool-plugin::REQ-005/AC-02); it counts as reported only when Claude Code takes the prompt
+ * (claude-session-pool-plugin::REQ-005/AC-03).
+ */
+async function look($: Engine, state: State): Promise<void> {
+  const due = await lookAtSubagents($, state.watch);
+  if (due.length === 0 || state.isTurnRunning || state.request !== undefined || state.reporting) return;
+  state.reporting = true;
+  try {
+    const answer = await $.prompt.submit({ text: reportText(due) });
+    if (answer.drop === undefined) for (const { seen } of due) seen.reported = true;
+  } catch {
+    // Not taken: what was due stays due.
+  } finally {
+    state.reporting = false;
+  }
+}
+
 /** The answer to a call to the mod's own tool: the figures Claude Code has at that moment. */
 async function contextUsage($: Engine): Promise<{ result: string } | { deny: string }> {
   let context: ContextFigures;
@@ -229,7 +264,16 @@ async function contextUsage($: Engine): Promise<{ result: string } | { deny: str
 }
 
 export const register = (on: On): void => {
-  const state: State = { isInteractive: false, isTurnRunning: false, request: undefined, due: 0, clearing: undefined };
+  // Kept in this closure, so a reload of the mod starts it anew.
+  const state: State = {
+    isInteractive: false,
+    isTurnRunning: false,
+    request: undefined,
+    due: 0,
+    clearing: undefined,
+    reporting: false,
+    watch: new Map(),
+  };
 
   on("classic.SessionStart", async ($, e, next) => {
     const answered = await next(e);
@@ -245,6 +289,7 @@ export const register = (on: On): void => {
 
   on("session.start", async ($, e, next) => {
     state.isInteractive = e.isInteractive;
+    if (e.isInteractive) $.clock.every(LOOK_MS, () => void look($, state));
     try {
       await $.tool.register(USAGE_SPEC);
     } catch (error) {

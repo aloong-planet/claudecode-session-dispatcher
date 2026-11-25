@@ -1,9 +1,10 @@
 /**
  * A fake of the engine Claude Code hands the plugin's mod, handed in the way Claude Code hands in its own: it records what
- * the mod asks for (a compaction, a prompt, a timer, a tool of its own, a command) and lets a test decide how each
- * compaction ends and which context figures Claude Code has. `modSetup` registers the mod's own `register` in it.
+ * the mod asks for (a compaction, a prompt, a timer, a tool of its own, a command, every call it makes) and lets a test
+ * decide how each compaction ends, whether a prompt is taken, which context figures Claude Code has and which subagents
+ * it lists. `modSetup` registers the mod's own `register` in it.
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { register } from "../../plugin/hooks/register.ts";
 import { WakeState } from "../../src/wake.ts";
@@ -29,6 +30,20 @@ export const USAGE_TOOL = "mcp__cc-session-pool__context_usage";
 export const MEASURED = { startedAt: 1_794_810_000_000, context: { tokens: 58965, window: 1000000, percent: 6 }, rateLimits: [], cost: { usd: 0.04 } };
 
 type Hook = ($: unknown, e: unknown, next: (e: unknown) => Promise<unknown>) => Promise<unknown>;
+/** A subagent as Claude Code 2.1.327 lists it to a mod (`$.agent.list()`), with the fields the mod reads. */
+export type ListedAgent = {
+  id: string;
+  type: string;
+  description: string;
+  status: "pending" | "running" | "waiting" | "idle" | "completed" | "failed" | "killed";
+  taskStatus: "pending" | "running" | "completed" | "failed" | "killed" | "paused";
+  kind: "local_agent" | "in_process_teammate";
+  teammateId?: string;
+  parentId?: string;
+  tokenCount: number;
+};
+/** How often the mod looks, in milliseconds. */
+export const LOOK_MS = 60_000;
 export type Compaction = { finish: (outcome?: { skip?: string }) => Promise<void>; refuse: (message: string) => Promise<void> };
 
 /** Lets everything the mod started and is not waiting for run to its next wait. */
@@ -51,7 +66,21 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   const wake = new WakeState(join(home, ".claude-session-pool"));
   const compactions: Compaction[] = [];
   const prompts: string[] = [];
+  /**
+   * How Claude Code answers the mod's next prompts: `take` resolves with the prompt, `drop` resolves with a reason (as when
+   * the owner stopped the session and typed nothing since), `reject` rejects, `hold` does not answer.
+   */
+  const promptAnswer = { kind: "take" as "take" | "drop" | "reject" | "hold" };
   const timers: { ms: number; run: () => void }[] = [];
+  /** The intervals the mod set (`$.clock.every`) and has not cancelled, and that a reload of the mod has not stopped. */
+  const intervals: { ms: number; run: () => void }[] = [];
+  /** Every call the mod made to the engine, as `<noun>.<method>`. */
+  const engineCalls: string[] = [];
+  // Beside the session's transcript, the directory of its subagents' transcripts, laid out as Claude Code 2.1.327 does.
+  const transcriptPath = join(home, ".claude", "projects", "-somewhere", `${SESSION}.jsonl`);
+  const subagentDirectory = join(home, ".claude", "projects", "-somewhere", SESSION, "subagents");
+  /** The subagents Claude Code lists to the mod; `fails`: it rejects the call. */
+  const agents = { listed: [] as ListedAgent[], fails: false };
   /** The tools the mod registered, as it described them. */
   const tools: unknown[] = [];
   /** What Claude Code answers the mod's request for the session's figures with. */
@@ -70,7 +99,18 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   const engine = {
     ui: { log: (text: string, options?: unknown) => void logs.push({ text, options }) },
     env: { get: (name: string) => Promise.resolve(name === "HOME" && homeKnown ? home : undefined) },
-    fs: { read: (path: string) => Promise.resolve().then(() => (reads.push(path), readFileSync(path, "utf8"))) },
+    fs: {
+      read: (path: string) => Promise.resolve().then(() => (reads.push(path), readFileSync(path, "utf8"))),
+      list: (path: string) =>
+        Promise.resolve().then(() =>
+          readdirSync(path, { withFileTypes: true }).map((entry) => ({
+            name: entry.name,
+            kind: entry.isFile() ? "file" : entry.isDirectory() ? "dir" : "other",
+            size: entry.isFile() ? statSync(join(path, entry.name)).size : 0,
+          })),
+        ),
+    },
+    agent: { list: () => (agents.fails ? Promise.reject(new Error("cc-session-pool: $.agent.list: failed")) : Promise.resolve(structuredClone(agents.listed))) },
     tool: {
       register: (spec: { name: string }) =>
         registerFails
@@ -80,6 +120,7 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     session: {
       usage: () => usage.answer(),
       id: () => (session.idFails ? Promise.reject(new Error("no session")) : Promise.resolve(session.id)),
+      info: () => Promise.resolve({ transcriptPath }),
       compact: () =>
         new Promise<{ skip?: string }>((resolve, reject) => {
           compactions.push({
@@ -88,8 +129,24 @@ export async function modSetup({ interactive = true, told = true, registerFails 
           });
         }),
     },
-    prompt: { submit: ({ text }: { text: string }) => (prompts.push(text), Promise.resolve({ text })) },
-    clock: { now: () => Promise.resolve(time.now), after: (ms: number, run: () => void) => void timers.push({ ms, run }) },
+    prompt: {
+      submit: ({ text }: { text: string }) => {
+        prompts.push(text);
+        if (promptAnswer.kind === "drop") return Promise.resolve({ drop: "the session was stopped and nobody has sent input since" });
+        if (promptAnswer.kind === "reject") return Promise.reject(new Error("cc-session-pool: $.prompt.submit: the session is stopping"));
+        if (promptAnswer.kind === "hold") return new Promise(() => {});
+        return Promise.resolve({ text, origin: { kind: "plugin", name: "cc-session-pool" } });
+      },
+    },
+    clock: {
+      now: () => Promise.resolve(time.now),
+      after: (ms: number, run: () => void) => void timers.push({ ms, run }),
+      every: (ms: number, run: () => void) => {
+        const interval = { ms, run };
+        intervals.push(interval);
+        return () => void (intervals.includes(interval) && intervals.splice(intervals.indexOf(interval), 1));
+      },
+    },
     command: {
       run: ({ command }: { command: string }) => {
         commands.push(command);
@@ -104,9 +161,12 @@ export async function modSetup({ interactive = true, told = true, registerFails 
       },
     },
   };
+  for (const [noun, methods] of Object.entries(engine) as [string, Record<string, (...args: never[]) => unknown>][])
+    for (const [method, call] of Object.entries(methods)) methods[method] = (...args: never[]) => (engineCalls.push(`${noun}.${method}`), call(...args));
   const tell = (event: string, input: unknown, fromCore: unknown = {}, below?: Promise<unknown>) =>
     hooks.get(event)!(engine, input, () => (below === undefined ? Promise.resolve(fromCore) : below.then(() => fromCore)));
-  if (told) await tell("session.start", { cwd: "/somewhere", surface: interactive ? "terminal" : null, isInteractive: interactive });
+  const start = () => tell("session.start", { cwd: "/somewhere", surface: interactive ? "terminal" : null, isInteractive: interactive });
+  if (told) await start();
 
   return {
     session,
@@ -147,7 +207,38 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     },
     compactions,
     prompts,
+    promptAnswer,
     timers,
+    intervals,
+    engineCalls,
+    agents,
+    /**
+     * Claude Code starts a subagent in the background, or one is started by a subagent: it is listed, running unless
+     * `fields` say otherwise, and its transcript lies beside its meta file, as Claude Code 2.1.327 lays them out.
+     */
+    startSubagent: (id: string, fields: Partial<ListedAgent> = {}, size = 284_744) => {
+      const agent: ListedAgent = { id, type: "general-purpose", description: "Run the test suite", status: "running", taskStatus: "running", kind: "local_agent", tokenCount: 45_424, ...fields };
+      agents.listed.push(agent);
+      writeTranscript(id, size);
+      writeFileSync(join(subagentDirectory, `agent-${id}.meta.json`), JSON.stringify({ agentType: agent.type, description: agent.description }));
+      return agent;
+    },
+    /** A subagent's transcript grows (or shrinks) to `size` bytes. */
+    writeTranscript,
+    subagentDirectory,
+    /** The mod's timer fires: it makes `count` looks, each one let run to its next wait. */
+    look: async (count = 1) => {
+      for (let made = 0; made < count; made += 1) {
+        for (const interval of intervals.filter(({ ms }) => ms === LOOK_MS)) interval.run();
+        await settle();
+      }
+    },
+    /** Claude Code loads the mod again, as when a file of the plugin is saved: the earlier timers stop and the mod is started anew. */
+    reload: async () => {
+      intervals.length = 0;
+      register((event: string, hook: unknown) => void hooks.set(event, hook as Hook));
+      await start();
+    },
     tools,
     usage,
     logs,
@@ -162,6 +253,11 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     /** Runs the timers set with this delay, in the order they were set. */
     runTimers,
   };
+
+  function writeTranscript(id: string, size: number) {
+    mkdirSync(subagentDirectory, { recursive: true });
+    writeFileSync(join(subagentDirectory, `agent-${id}.jsonl`), "x".repeat(size));
+  }
 
   async function runTimers(ms: number) {
     const due = timers.filter((timer) => timer.ms === ms);
