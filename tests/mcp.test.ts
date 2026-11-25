@@ -16,6 +16,7 @@ import { Pool } from "../src/pool.ts";
 import { SelfCompaction } from "../src/self-compaction.ts";
 import { WakeState } from "../src/wake.ts";
 import { FakeMac } from "./support/fake-mac.ts";
+import { writeLookRecord } from "./support/look-record.ts";
 import { cleanUpTemporaryDirectories, temporaryDirectory } from "./support/temporary.ts";
 
 const fakes: FakeMac[] = [];
@@ -60,14 +61,14 @@ async function connect({ dispatcher } = { dispatcher: true }) {
     return { isError: result.isError === true, text: content.map((part) => part.text).join("\n") };
   };
   const toolNames = async () => (await client.listTools()).tools.map((tool) => tool.name).sort();
-  return { mac, call, directory, attached, toolNames };
+  return { mac, call, directory, home, attached, toolNames };
 }
 
 describe("the MCP server", () => {
-  it("offers a dispatcher session the nine pool tools and compact_self", async () => {
+  it("offers a dispatcher session the ten pool tools and compact_self", async () => {
     const { toolNames } = await connect({ dispatcher: true });
 
-    expect(await toolNames()).toEqual(["adopt", "clear", "close", "compact", "compact_self", "init", "open", "recycle", "release", "status"]);
+    expect(await toolNames()).toEqual(["adopt", "clear", "close", "compact", "compact_self", "init", "open", "recycle", "release", "restore", "status"]);
   });
 
   it("offers any other session compact_self alone, and answers a call to a pool tool with an error", async () => {
@@ -77,11 +78,13 @@ describe("the MCP server", () => {
     const names = await toolNames();
     const cleared = await call("clear", { name: "w1" });
     const closed = await call("close", { name: "w1", force: true });
+    const restored = await call("restore", { names: ["w1"] });
 
     expect(names).toEqual(["compact_self"]);
     expect(cleared.isError).toBe(true);
     expect(cleared.text).toContain("Tool clear not found");
     expect(closed.isError).toBe(true);
+    expect(restored).toEqual({ isError: true, text: expect.stringContaining("Tool restore not found") as unknown });
     expect([mac.typed, mac.terminated, mac.launches]).toEqual([[], [], []]);
   });
 
@@ -112,6 +115,24 @@ describe("the MCP server", () => {
 
     expect(result.isError).toBe(false);
     expect([mac.session("w1").model, mac.session("w1").permissionMode]).toEqual(["sonnet", "plan"]);
+  });
+
+  it("restore passes the names, the model and the permission mode", async () => {
+    const { mac, call, directory, home } = await connect();
+    await call("init", { names: ["w1", "w2"] });
+    const slots = ["w1", "w2"].map((name) => ({ name, sessionId: mac.session(name).sessionId!, state: "idle", seenAt: "2026-11-22T02:59:00.000Z", worked: true }));
+    for (const { name, sessionId } of slots) {
+      mac.appendTurnRecord(sessionId);
+      mac.endSession(mac.session(name).pid!);
+    }
+    writeLookRecord(join(home, "rosters"), directory, { version: 1, directory, slots });
+
+    const result = await call("restore", { names: ["w2", "w1"], model: "sonnet", permissionMode: "plan" });
+
+    expect(result.isError).toBe(false);
+    expect(mac.launches.slice(2).map(({ argv }) => argv)).toEqual(
+      [slots[1]!, slots[0]!].map(({ name, sessionId }) => ["claude", "-n", name, "--resume", sessionId, "--model", "sonnet", "--permission-mode", "plan"]),
+    );
   });
 
   it("adopt and status act on the named session", async () => {

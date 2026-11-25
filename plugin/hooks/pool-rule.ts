@@ -1,7 +1,8 @@
 // The pool's rules that the server and the plugin's mod both apply, written once: how Claude Code's session listing is
 // read, which session a slot is and so which state it is in (docs/specs/claude-session-pool.md, "Which session a slot
-// is"), the form of a roster's slots and a slot name, and the form of a look record ("Look records"). The server's
-// `status` and the mod's looks take a slot's state from the same function, so that they agree.
+// is"), the form of a roster's slots and a slot name, the form of a look record ("Look records"), and which slot
+// `restore` acts on (claude-session-pool::US-008/AC-04). The server's `status` and the mod's looks take a slot's state
+// from the same function, so that they agree.
 //
 // The mod loads this file, so it imports nothing (Claude Code gives a mod no modules) and is free of Node's interfaces.
 
@@ -64,19 +65,37 @@ export function resolveSlot(sessions: readonly SessionEntry[], name: string, dir
   return { state: "live", session: matches[0]! };
 }
 
+/** The live session listed under the name `name`, in whatever directory and of whatever kind, which keeps a new session from taking that name. */
+export function sessionNamed(sessions: readonly SessionEntry[], name: string): LiveSession | undefined {
+  return sessions.find((session): session is LiveSession => session.pid !== undefined && session.name === name);
+}
+
 export type RosterSlot = {
   name: string;
   /** Whether the server opened a session for the slot or took over one the owner opened. */
   origin: "opened" | "adopted";
   /** For an opened slot: the process ID of the session the server opened, and with it of the window it opened. */
   pid?: number;
+  /** The model and the permission mode the slot's session was last started with by the server. */
+  model?: string;
+  permissionMode?: string;
+  /** The session ID of the session that `recycle` ended for the slot before its new session was confirmed. */
+  endedSessionId?: string;
 };
 
 /** Whether `value` is a slot in the form a roster file holds it in. */
 export function isRosterSlot(value: unknown): value is RosterSlot {
   if (typeof value !== "object" || value === null) return false;
-  const { name, origin, pid } = value as Record<string, unknown>;
-  return typeof name === "string" && (origin === "opened" || origin === "adopted") && (pid === undefined || typeof pid === "number");
+  const { name, origin, pid, model, permissionMode, endedSessionId } = value as Record<string, unknown>;
+  const text = (field: unknown) => field === undefined || typeof field === "string";
+  return (
+    typeof name === "string" &&
+    (origin === "opened" || origin === "adopted") &&
+    (pid === undefined || typeof pid === "number") &&
+    text(model) &&
+    text(permissionMode) &&
+    text(endedSessionId)
+  );
 }
 
 /** A slot's entry in the pool's look record: what the last look that found the slot live found. */
@@ -117,6 +136,43 @@ export function parseLookRecord(text: string, directory: string): LookEntry[] | 
   const { version, directory: named, slots } = data as Record<string, unknown>;
   if (version !== 1 || named !== directory || !Array.isArray(slots) || !slots.every(isLookEntry)) return undefined;
   return slots.map(({ name, sessionId, state, seenAt, worked }) => ({ name, sessionId, state, seenAt, worked }));
+}
+
+/** Whether `restore` resumes a slot's conversation, and if not, why not (claude-session-pool::US-008/AC-04). */
+export type RestoreJudgement =
+  | { verdict: "restore"; entry: LookEntry }
+  | { verdict: "not gone"; resolved: Exclude<Resolved, { state: "gone" }> }
+  | { verdict: "name taken"; session: LiveSession }
+  | { verdict: "no look record" }
+  | { verdict: "no entry" }
+  | { verdict: "no work"; entry: LookEntry }
+  | { verdict: "ended by recycle"; entry: LookEntry }
+  | { verdict: "conversation held"; entry: LookEntry; session: LiveSession };
+
+/**
+ * Whether `restore` acts on the roster's slot `slot`, from the sessions listed on this Mac and the entries of the pool's
+ * look record (undefined: the pool has none). The transcript of the conversation is not looked at here.
+ */
+export function judgeRestore(
+  slot: RosterSlot,
+  sessions: readonly SessionEntry[],
+  directory: string,
+  canonical: (path: string) => string,
+  look: readonly LookEntry[] | undefined,
+): RestoreJudgement {
+  const resolved = resolveSlot(sessions, slot.name, directory, canonical);
+  if (resolved.state !== "gone") return { verdict: "not gone", resolved };
+  const taken = sessionNamed(sessions, slot.name);
+  if (taken) return { verdict: "name taken", session: taken };
+  if (look === undefined) return { verdict: "no look record" };
+  const entry = look.find((candidate) => candidate.name === slot.name);
+  if (!entry) return { verdict: "no entry" };
+  if (!entry.worked) return { verdict: "no work", entry };
+  if (slot.endedSessionId === entry.sessionId) return { verdict: "ended by recycle", entry };
+  // A resumed session keeps its session ID, so two live sessions would share the state files kept per session ID.
+  const holder = sessions.find((session): session is LiveSession => session.pid !== undefined && session.sessionId === entry.sessionId);
+  if (holder) return { verdict: "conversation held", entry, session: holder };
+  return { verdict: "restore", entry };
 }
 
 /**

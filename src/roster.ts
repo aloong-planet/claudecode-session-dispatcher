@@ -37,7 +37,14 @@ export class RosterStore {
     if (version !== VERSION) throw this.unusable(`its version is ${JSON.stringify(version)}, and this server reads version ${VERSION}`);
     if (directory !== this.directory) throw this.unusable(`it belongs to the directory ${JSON.stringify(directory)}`);
     if (!Array.isArray(slots) || !slots.every(isRosterSlot)) throw this.unusable("its slots are not in the expected form");
-    return slots.map(({ name, origin, pid }) => (pid === undefined ? { name, origin } : { name, origin, pid }));
+    return slots.map(({ name, origin, pid, model, permissionMode, endedSessionId }) => {
+      const slot: Slot = { name, origin };
+      if (pid !== undefined) slot.pid = pid;
+      if (model !== undefined) slot.model = model;
+      if (permissionMode !== undefined) slot.permissionMode = permissionMode;
+      if (endedSessionId !== undefined) slot.endedSessionId = endedSessionId;
+      return slot;
+    });
   }
 
   write(slots: Slot[]): void {

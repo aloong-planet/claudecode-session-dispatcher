@@ -17,12 +17,15 @@ export class LookRecordStore {
 
   /** The entries, by slot name; none where there is no file, or one that cannot be read or is not in the documented form. */
   entries(): Map<string, LookEntry> {
-    let entries: LookEntry[] | undefined;
+    return new Map((this.read() ?? []).map((entry) => [entry.name, entry]));
+  }
+
+  /** The entries; undefined where there is no file, or one that cannot be read or is not in the documented form: the pool has no look record. */
+  read(): LookEntry[] | undefined {
     try {
-      entries = parseLookRecord(readFileSync(this.path, "utf8"), this.directory);
+      return parseLookRecord(readFileSync(this.path, "utf8"), this.directory);
     } catch {
-      entries = undefined;
+      return undefined;
     }
-    return new Map((entries ?? []).map((entry) => [entry.name, entry]));
   }
 }

@@ -1,6 +1,7 @@
 // The pool monitor's look record (docs/specs/claude-session-pool-monitor.md, claude-session-pool-monitor::REQ-004): in a
 // dispatcher session, what a look takes of every slot of the roster, and the file it writes,
-// `~/.claude-session-pool/pool-states/<key>.json`, at every look and when a pool tool that names a slot has returned.
+// `~/.claude-session-pool/pool-states/<key>.json`, at every look and when a pool tool that names a slot, or `restore`, has
+// returned.
 //
 // A slot's state comes from `resolveSlot` in pool-rule.ts, the function the server's `status` takes it from. Of a worker
 // session the mod reads its activity record alone (claude-session-pool-monitor::REQ-001/AC-01), and of it only `worked`.
@@ -45,8 +46,23 @@ export type PoolLook = { queue: Promise<void> };
 
 export const newPoolLook = (): PoolLook => ({ queue: Promise.resolve() });
 
-/** The pool tools whose return has the mod write the slot's entry anew (claude-session-pool-monitor::REQ-004/AC-03). */
-export const POOL_TOOLS: readonly string[] = ["clear", "open", "recycle"].map((tool) => `mcp__plugin_cc-session-pool_pool__${tool}`);
+const POOL_TOOL = "mcp__plugin_cc-session-pool_pool__";
+/** The pool tools whose return has the mod write the entries of the slots they name anew (claude-session-pool-monitor::REQ-004/AC-03). */
+const POOL_TOOLS: readonly string[] = ["clear", "open", "recycle", "restore"].map((tool) => `${POOL_TOOL}${tool}`);
+
+/**
+ * Which entries the return of the call `call` has the mod write anew (claude-session-pool-monitor::REQ-004/AC-03): those
+ * of the slots it names, every one for a `restore` without names, or none (undefined). The call's arguments are fields
+ * beside `tool`, as measured on Claude Code 2.1.327.
+ */
+export function entriesWrittenAfter(call: { tool: string; name?: unknown; names?: unknown }): readonly string[] | "every slot" | undefined {
+  if (!POOL_TOOLS.includes(call.tool)) return undefined;
+  if (call.tool === `${POOL_TOOL}restore`) {
+    if (call.names === undefined) return "every slot";
+    return Array.isArray(call.names) ? call.names.filter((name): name is string => typeof name === "string") : undefined;
+  }
+  return typeof call.name === "string" ? [call.name] : undefined;
+}
 
 const STATE_DIRECTORY = ".claude-session-pool";
 /** The start-up command's mark, which the server reads too (docs/specs/claude-session-pool.md, "Which session is the dispatcher session"). */
@@ -59,21 +75,24 @@ type Pool = { home: string; directory: string; rosterPath: string; recordPath: s
 
 /**
  * Writes the look record once the writes queued before have finished: at a look, every slot's entry
- * (claude-session-pool-monitor::REQ-004/AC-01); with `only`, that slot's entry alone, after a pool tool that named it has
- * returned (claude-session-pool-monitor::REQ-004/AC-03). Nothing is written in a session that is not a dispatcher session.
+ * (claude-session-pool-monitor::REQ-004/AC-01); with `only`, the entries of those slots alone, after a pool tool that
+ * named them has returned (claude-session-pool-monitor::REQ-004/AC-03). Nothing is written in a session that is not a
+ * dispatcher session.
  */
-export function recordPool($: PoolEngine, pool: PoolLook, only?: string): Promise<void> {
+export function recordPool($: PoolEngine, pool: PoolLook, only?: readonly string[]): Promise<void> {
   pool.queue = pool.queue.then(() => writeLookRecord($, only));
   return pool.queue;
 }
 
-async function writeLookRecord($: PoolEngine, only: string | undefined): Promise<void> {
+async function writeLookRecord($: PoolEngine, only: readonly string[] | undefined): Promise<void> {
   try {
     const pool = await dispatcherPool($);
     if (pool === undefined) return;
     const roster = await rosterNames($, pool);
     // A roster that cannot be read judges no slot (claude-session-pool-monitor::REQ-003/AC-01).
-    if (roster === undefined || (only !== undefined && !roster.includes(only))) return;
+    if (roster === undefined) return;
+    const named = only?.filter((name, at) => roster.includes(name) && only.indexOf(name) === at);
+    if (named !== undefined && named.length === 0) return;
     const standing = await standingEntries($, pool);
     let entries: LookEntry[] = [];
     if (roster.length > 0) {
@@ -83,7 +102,7 @@ async function writeLookRecord($: PoolEngine, only: string | undefined): Promise
       const realPaths = await realPathsOf($, sessions, roster);
       const now = await $.clock.now();
       const judge = (name: string) => entryOf($, pool, sessions, realPaths, name, standing.find((entry) => entry.name === name), now);
-      if (only === undefined) {
+      if (named === undefined) {
         for (const name of roster) {
           const entry = await judge(name);
           if (entry !== undefined) entries.push(entry);
@@ -91,11 +110,13 @@ async function writeLookRecord($: PoolEngine, only: string | undefined): Promise
       } else {
         // claude-session-pool-monitor::REQ-004/AC-03: the other entries stay as they were, a name's that has left the
         // roster since the last look among them.
-        const entry = await judge(only);
-        const at = standing.findIndex(({ name }) => name === only);
         entries = [...standing];
-        if (entry !== undefined && at === -1) entries.push(entry);
-        else if (entry !== undefined) entries[at] = entry;
+        for (const name of named) {
+          const entry = await judge(name);
+          const at = entries.findIndex((candidate) => candidate.name === name);
+          if (entry !== undefined && at === -1) entries.push(entry);
+          else if (entry !== undefined) entries[at] = entry;
+        }
       }
     }
     await $.fs.write(pool.recordPath, `${JSON.stringify({ version: 1, directory: pool.directory, slots: entries })}\n`);
