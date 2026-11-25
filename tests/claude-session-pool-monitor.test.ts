@@ -1047,12 +1047,33 @@ describe("a slot a pool tool is acting on (claude-session-pool-monitor, \"A pool
       },
       "- wa: idle for 5 minutes since its last turn ended, and it sent this session no message since 5 minutes before that.",
     ],
-  ])("is not reported again as %s, while that lasts, once a call to %s that named it has returned (claude-session-pool-monitor::US-001/AC-09)", async (_, name, condition, line) => {
+    [
+      "waiting",
+      "clear",
+      async (pool) => {
+        await (await pool.worker(W1)).loads();
+        pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "waiting", { waitingFor: "permission prompt" })]);
+        await pool.looks();
+      },
+      "- wa: waiting for permission prompt.",
+    ],
+    [
+      "unrecorded",
+      "open",
+      async (pool) => {
+        pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle")]);
+        await pool.looks(2);
+      },
+      "- wa: its session writes no activity record, so whether it makes progress is not known.",
+    ],
+  ])("is not reported again as %s, while that lasts, once a call to %s that named it has run across a look and returned (claude-session-pool-monitor::US-001/AC-09)", async (_, name, condition, line) => {
     const pool = await dispatcher(["wa"]);
     await condition(pool);
     await pool.looks();
     const refused = { result: "wa was left as it is", text: "wa was left as it is", isError: true };
-    await (await pool.mod.startsCall(tool(name), undefined, name === "restore" ? { names: ["wa"] } : { name: "wa" }, refused)).returns();
+    const call = await pool.mod.startsCall(tool(name), undefined, name === "restore" ? { names: ["wa"] } : { name: "wa" }, refused);
+    await pool.looks();
+    await call.returns();
 
     await pool.looks(3);
 
