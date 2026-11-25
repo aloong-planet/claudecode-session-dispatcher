@@ -5,7 +5,7 @@
  * it lists. `modSetup` registers the mod's own `register` in it.
  */
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { register } from "../../plugin/hooks/register.ts";
 import { WakeState } from "../../src/wake.ts";
 import { SESSION } from "./sessions.ts";
@@ -48,7 +48,7 @@ export type Compaction = { finish: (outcome?: { skip?: string }) => Promise<void
 
 /** Lets everything the mod started and is not waiting for run to its next wait. */
 export const settle = async () => {
-  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  for (let turn = 0; turn < 100; turn += 1) await Promise.resolve();
 };
 
 /**
@@ -102,13 +102,21 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   const clears = { fails: false, held: false, release: () => {} };
   /** Whether a `classic.FileChanged` event is being dispatched: Claude Code rejects `$.command.run` while it is. */
   const dispatching = { fileChanged: false };
-  /** The paths the mod read. */
+  /** The paths the mod read, and those it wrote. */
   const reads: string[] = [];
+  const writes: string[] = [];
   const engine = {
     ui: { log: (text: string, options?: unknown) => void logs.push({ text, options }) },
     env: { get: (name: string) => Promise.resolve(name === "HOME" && homeKnown ? home : undefined) },
     fs: {
       read: (path: string) => Promise.resolve().then(() => (reads.push(path), readFileSync(path, "utf8"))),
+      // As Claude Code 2.1.327 does: makes the directories the path needs and writes the file in place.
+      write: (path: string, text: string) =>
+        Promise.resolve().then(() => {
+          writes.push(path);
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, text);
+        }),
       list: (path: string) =>
         Promise.resolve().then(() =>
           readdirSync(path, { withFileTypes: true }).map((entry) => ({
@@ -174,8 +182,12 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     for (const [method, call] of Object.entries(methods)) methods[method] = (...args: never[]) => (engineCalls.push(`${noun}.${method}`), call(...args));
   const tell = (event: string, input: unknown, fromCore: unknown = {}, below?: Promise<unknown>) =>
     hooks.get(event)!(engine, input, () => (below === undefined ? Promise.resolve(fromCore) : below.then(() => fromCore)));
-  const start = () => tell("session.start", { cwd: "/somewhere", surface: interactive ? "terminal" : null, isInteractive: interactive });
+  const start = async () => {
+    await tell("session.start", { cwd: "/somewhere", surface: interactive ? "terminal" : null, isInteractive: interactive });
+    await settle();
+  };
   if (told) await start();
+  let callsMade = 0;
 
   return {
     session,
@@ -185,6 +197,16 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     commands,
     clears,
     reads,
+    writes,
+    /** The session's activity record for the session ID `sessionId`, parsed; undefined where there is no file. */
+    activity: (sessionId = SESSION): unknown => {
+      try {
+        return JSON.parse(readFileSync(join(home, ".claude-session-pool", "activity", `${sessionId}.json`), "utf8"));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+      }
+    },
     /** Claude Code tells the mod that a session started, by way of the classic `SessionStart` hook; resolves to what the mod answers. */
     classicStart: (source: string, fromCore?: unknown) => tell("classic.SessionStart", { hook_event_name: "SessionStart", source }, fromCore),
     /**
@@ -253,10 +275,33 @@ export async function modSetup({ interactive = true, told = true, registerFails 
     logs,
     /** A call to a tool; resolves to what the model receives for it. */
     calls: (tool = TOOL, agentId?: string) => tell("tool.call", { tool, tool_use_id: "toolu_01", ...(agentId === undefined ? {} : { agentId }) }, FROM_SERVER),
-    turnStarts: () => tell("turn.start", { text: "", turnId: "t" }),
-    /** A turn of the session ends; then whatever the mod set a timer of no delay for runs. */
-    turnEnds: async (reason = "answer") => {
-      await tell("turn.complete", { reason, turnId: "t", answer: "" }, { text: "" });
+    /**
+     * A call to a tool that Claude Code runs and that has not returned yet, as a Bash command that takes a while: the mod is
+     * told of it and has passed it on. `returns` lets the tool return and resolves to what the model receives.
+     */
+    startsCall: async (tool: string, agentId?: string) => {
+      callsMade += 1;
+      let release = () => {};
+      const ran = new Promise<void>((resolve) => (release = resolve));
+      const answered = tell("tool.call", { tool, tool_use_id: `toolu_${callsMade}`, ...(agentId === undefined ? {} : { agentId }) }, FROM_SERVER, ran);
+      await settle();
+      return {
+        returns: async () => {
+          release();
+          const result = await answered;
+          await settle();
+          return result;
+        },
+      };
+    },
+    /** A turn starts: of the main conversation, or of the subagent `agentId`. */
+    turnStarts: async (agentId?: string) => {
+      await tell("turn.start", { text: "", turnId: "t", ...(agentId === undefined ? {} : { agentId }) });
+      await settle();
+    },
+    /** A turn ends (of the main conversation, or of the subagent `agentId`); then whatever the mod set a timer of no delay for runs. */
+    turnEnds: async (reason = "answer", agentId?: string) => {
+      await tell("turn.complete", { reason, turnId: "t", answer: "", ...(agentId === undefined ? {} : { agentId }) }, { text: "" });
       await runTimers(0);
     },
     /** Runs the timers set with this delay, in the order they were set. */

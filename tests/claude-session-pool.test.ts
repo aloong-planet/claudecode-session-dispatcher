@@ -56,7 +56,7 @@ function setup(options: { plugin?: Plugin } = {}) {
   mac.transcriptRoot = transcriptRoot;
   const wake = new WakeState(stateRoot);
   const plugin = options.plugin ?? "absent";
-  if (plugin !== "absent") mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid) });
+  if (plugin !== "absent") mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid), now: Date.now });
   const ordersDirectory = join(stateRoot, "clear-orders");
   if (plugin !== "absent") mac.modWatches = ordersDirectory;
   mac.modRuns = plugin === "hooks and mod";
@@ -1695,7 +1695,8 @@ describe("a clear order that the server left for the session", () => {
     await context.fileChanged();
     await context.turnEnds();
 
-    expect(context.reads).toEqual([]);
+    // The one read is the mod's own activity record, at load, under the session ID the session had then.
+    expect(context.reads).toEqual([join(context.home, ".claude-session-pool", "activity", `${SESSION}.json`)]);
     expect(context.commands).toEqual([]);
   });
 

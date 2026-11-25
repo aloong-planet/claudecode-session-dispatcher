@@ -1,4 +1,4 @@
-import { readdirSync, rmSync } from "node:fs";
+import { readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonObject, writeJsonFile } from "./json-file.ts";
 
@@ -13,13 +13,15 @@ const VERSION = 1;
 /** A session ID becomes a file name, so one that could name a file elsewhere is not taken for one. */
 const SESSION_ID = /^[A-Za-z0-9-]+$/;
 const HOOK_RECORD = /^(\d+)\.json$/;
+const ACTIVITY_RECORD = /^[A-Za-z0-9-]+\.json$/;
 
 /**
  * What the plugin's hooks, its mod, `compact_self` and `clear` leave for each other under one directory. A hook record,
  * one per session process, shows that the plugin's hooks run in that session. A wake request, one per conversation,
  * tells the hook to wake the session when the conversation's next compaction has finished. A clear order, one per
  * conversation, tells the mod in the session to run `/clear`; only `clear` writes one, and the mod, in the session's
- * own process, is what reads it.
+ * own process, is what reads it. An activity record, one per conversation, is what the mod writes of its session's
+ * activity; here they are only deleted once they are old.
  *
  * A file of any kind that does not hold what this version writes is treated as absent.
  */
@@ -51,6 +53,30 @@ export class WakeState {
     for (const name of names) {
       const pid = HOOK_RECORD.exec(name)?.[1];
       if (pid !== undefined && !isAlive(Number(pid))) rmSync(join(this.root, "hooks", name), { force: true });
+    }
+  }
+
+  /**
+   * Deletes every activity record that was last written before `cutoff`, in milliseconds since the epoch, judged by the
+   * time the file was last modified (claude-session-pool-plugin::REQ-008/AC-04). Nothing else in the directory is touched.
+   */
+  dropActivityRecordsWrittenBefore(cutoff: number): void {
+    const directory = join(this.root, "activity");
+    let names: string[];
+    try {
+      names = readdirSync(directory);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!ACTIVITY_RECORD.test(name)) continue;
+      const path = join(directory, name);
+      try {
+        const stats = statSync(path);
+        if (stats.isFile() && stats.mtimeMs < cutoff) rmSync(path, { force: true });
+      } catch {
+        // Gone already, or written again by its session meanwhile: left alone.
+      }
     }
   }
 

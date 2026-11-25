@@ -23,19 +23,23 @@
 // In an interactive session it also looks at the session's subagents once a minute, without a model request, and
 // starts a turn with a report when one of them makes no progress for 11 minutes (subagent-watch.ts).
 //
-// The module imports nothing but the file of the plugin beside it, which Claude Code 2.1.327 loads with it: Claude Code
+// In an interactive session it also keeps the session's activity record, which it writes when Claude Code loads it and
+// at every look (activity.ts).
+//
+// The module imports nothing but the files of the plugin beside it, which Claude Code 2.1.327 loads with it: Claude Code
 // gives a mod neither Node's modules nor the repository's packages. The types
 // below state the part of Claude Code's interface for mods that it uses, as measured on Claude Code 2.1.322; what the
 // clear order uses (the watch paths of classic.SessionStart, classic.FileChanged and $.command.run) was measured on 2.1.327.
 
+import { callReturned, callStarted, loadActivity, lookAtActivity, newActivity, turnEnded, turnStarted, writeActivity, type Activity } from "./activity.ts";
 import { lookAtSubagents, reportText, type Watch, type WatchEngine } from "./subagent-watch.ts";
 
 /** The context window's figures as the status line has them; `tokens` and `percent` are absent until the window's first response. */
 type ContextFigures = { tokens?: number; window: number; percent?: number };
 type Engine = WatchEngine & {
   env: { get: (name: string) => Promise<string | undefined> };
-  /** Reads a file's text; rejects when it cannot. */
-  fs: WatchEngine["fs"] & { read: (path: string) => Promise<string> };
+  /** Reads a file's text, or writes one in place, making the directories its path needs; rejects when it cannot. */
+  fs: WatchEngine["fs"] & { read: (path: string) => Promise<string>; write: (path: string, text: string) => Promise<unknown> };
   /** Runs a slash command as if the user typed it, once the session is idle. Rejects when Claude Code does not take it. */
   command: { run: (args: { command: string }) => Promise<unknown> };
   /** Declares a tool of the mod's own, which the model calls as `mcp__<plugin>__<name>`. */
@@ -56,12 +60,14 @@ type Engine = WatchEngine & {
   /** Appends a line to the transcript, or with `{ to: "debug" }` to Claude Code's debug log alone (measured on 2.1.325). */
   ui: { log: (text: string, options?: { to?: "transcript" | "debug" }) => void };
 };
+type ToolCall = { tool: string; agentId?: string };
 type Hook<Input, Answer = unknown> = ($: Engine, e: Input, next: (e: Input) => Promise<Answer>) => Promise<unknown>;
 /** Why a turn ended: with the model's answer, by the user's interrupt, on a refusal by the model, or on an API error. */
 type TurnEnd = { agentId?: string; reason: "answer" | "aborted" | "refusal" | "error" };
 type On = {
   (event: "session.start", hook: Hook<{ isInteractive: boolean }>): void;
-  (event: "tool.call", hook: Hook<{ tool: string; agentId?: string }>): void;
+  /** `next` resolves when the tool has returned; Claude Code tells of calls made side by side before either returns (measured on 2.1.327). */
+  (event: "tool.call", hook: Hook<ToolCall>): void;
   (event: "turn.start", hook: Hook<{ agentId?: string }>): void;
   (event: "turn.complete", hook: Hook<TurnEnd>): void;
   /** Claude Code's `SessionStart` hooks, which may name paths to watch; `next` resolves to what the hooks before this one returned. */
@@ -125,6 +131,7 @@ type State = {
   /** Whether a report the mod submitted has not been answered yet. */
   reporting: boolean;
   watch: Watch;
+  activity: Activity;
 };
 
 // Claude Code lets a mod pass `$` only to functions declared at the top of a module (of an imported one as well, as
@@ -237,7 +244,8 @@ async function compact($: Engine, state: State, asked: Request, turnEnd: number,
  * (claude-session-pool-plugin::REQ-005/AC-03).
  */
 async function look($: Engine, state: State): Promise<void> {
-  const due = await lookAtSubagents($, state.watch);
+  const { due, progressed } = await lookAtSubagents($, state.watch);
+  await lookAtActivity($, state.activity, { turnRunning: state.isTurnRunning, subagentProgressed: progressed });
   if (due.length === 0 || state.isTurnRunning || state.request !== undefined || state.reporting) return;
   state.reporting = true;
   try {
@@ -248,6 +256,38 @@ async function look($: Engine, state: State): Promise<void> {
   } finally {
     state.reporting = false;
   }
+}
+
+/** When Claude Code loads the mod in an interactive session: the activity record (claude-session-pool-plugin::REQ-008/AC-01). */
+async function startActivity($: Engine, state: State): Promise<void> {
+  await loadActivity($, state.activity);
+  await writeActivity($, state.activity, state.isTurnRunning);
+}
+
+/** A tool call of the main conversation runs from the moment Claude Code tells of it until its answer is given. */
+async function trackCall($: Engine, state: State, e: ToolCall, next: (e: ToolCall) => Promise<unknown>): Promise<unknown> {
+  const call = callStarted($, state.activity, e.tool);
+  try {
+    return await answerCall($, state, e, next);
+  } finally {
+    callReturned($, state.activity, call);
+  }
+}
+
+async function answerCall($: Engine, state: State, e: ToolCall, next: (e: ToolCall) => Promise<unknown>): Promise<unknown> {
+  if (e.tool === USAGE_TOOL) return e.agentId === undefined ? contextUsage($) : { deny: USAGE_SUBAGENT_REFUSAL };
+  if (e.tool !== TOOL || !state.isInteractive) return next(e);
+  if (e.agentId !== undefined) return { deny: SUBAGENT_REFUSAL };
+  let sessionId: string;
+  try {
+    sessionId = await $.session.id();
+  } catch {
+    // Without the conversation's ID the mod could not tell a cleared conversation later: the server handles the call.
+    return next(e);
+  }
+  // A request that stands is for this conversation again, or for one that was cleared since; either way this one takes its place.
+  state.request = { sessionId };
+  return { result: ANSWER };
 }
 
 /** The answer to a call to the mod's own tool: the figures Claude Code has at that moment. */
@@ -273,6 +313,7 @@ export const register = (on: On): void => {
     clearing: undefined,
     reporting: false,
     watch: new Map(),
+    activity: newActivity(),
   };
 
   on("classic.SessionStart", async ($, e, next) => {
@@ -289,7 +330,10 @@ export const register = (on: On): void => {
 
   on("session.start", async ($, e, next) => {
     state.isInteractive = e.isInteractive;
-    if (e.isInteractive) $.clock.every(LOOK_MS, () => void look($, state));
+    if (e.isInteractive) {
+      $.clock.every(LOOK_MS, () => void look($, state));
+      void startActivity($, state);
+    }
     try {
       await $.tool.register(USAGE_SPEC);
     } catch (error) {
@@ -299,24 +343,13 @@ export const register = (on: On): void => {
     return next(e);
   });
 
-  on("tool.call", async ($, e, next) => {
-    if (e.tool === USAGE_TOOL) return e.agentId === undefined ? contextUsage($) : { deny: USAGE_SUBAGENT_REFUSAL };
-    if (e.tool !== TOOL || !state.isInteractive) return next(e);
-    if (e.agentId !== undefined) return { deny: SUBAGENT_REFUSAL };
-    let sessionId: string;
-    try {
-      sessionId = await $.session.id();
-    } catch {
-      // Without the conversation's ID the mod could not tell a cleared conversation later: the server handles the call.
-      return next(e);
-    }
-    // A request that stands is for this conversation again, or for one that was cleared since; either way this one takes its place.
-    state.request = { sessionId };
-    return { result: ANSWER };
-  });
+  on("tool.call", ($, e, next) => (state.isInteractive && e.agentId === undefined ? trackCall($, state, e, next) : answerCall($, state, e, next)));
 
   on("turn.start", ($, e, next) => {
-    if (e.agentId === undefined) state.isTurnRunning = true;
+    if (e.agentId === undefined) {
+      state.isTurnRunning = true;
+      if (state.isInteractive) void turnStarted($, state.activity);
+    }
     return next(e);
   });
 
@@ -324,6 +357,7 @@ export const register = (on: On): void => {
     const answered = await next(e);
     if (e.agentId !== undefined) return answered;
     state.isTurnRunning = false;
+    if (state.isInteractive) void turnEnded($, state.activity);
     $.clock.after(0, () => void clearIfOrdered($, state, 0));
     const asked = state.request;
     if (asked === undefined) return answered;

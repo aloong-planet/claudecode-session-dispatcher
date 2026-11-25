@@ -19,6 +19,7 @@ const { exitCode, stderr } = runHook(input, {
   // The session is the process that started this one: the plugin declares its hooks without a shell in between.
   sessionPid: process.ppid,
   isAlive: (pid) => processes.isAlive(pid),
+  now: Date.now,
 });
 // Whatever goes to standard error when the exit code is 2 is handed to the model, so nothing else is written there.
 if (stderr !== "") process.stderr.write(`${stderr}\n`);

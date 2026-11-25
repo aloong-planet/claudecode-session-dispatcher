@@ -41,10 +41,11 @@ const ID = /^[A-Za-z0-9-]+$/;
 
 /**
  * One look: takes the subagents that Claude Code lists as running a turn, teammates left out, counts the looks without
- * progress of each, and answers the lines that are due. A subagent that this look does not find running a turn is
- * forgotten, so its count starts anew; a list that Claude Code does not give finds none.
+ * progress of each, and answers the lines that are due, and whether the look found progress in a subagent that the look
+ * before found running a turn (claude-session-pool-plugin::REQ-007/AC-02). A subagent that this look does not find running
+ * a turn is forgotten, so its count starts anew; a list that Claude Code does not give finds none.
  */
-export async function lookAtSubagents($: WatchEngine, watch: Watch): Promise<Due[]> {
+export async function lookAtSubagents($: WatchEngine, watch: Watch): Promise<{ due: Due[]; progressed: boolean }> {
   let running: Listed[];
   try {
     running = (await $.agent.list()).filter((agent) => agent.status === "running" && agent.kind === "local_agent" && agent.teammateId === undefined);
@@ -52,21 +53,23 @@ export async function lookAtSubagents($: WatchEngine, watch: Watch): Promise<Due
     running = [];
   }
   for (const id of watch.keys()) if (!running.some((agent) => agent.id === id)) watch.delete(id);
-  if (running.length === 0) return [];
+  if (running.length === 0) return { due: [], progressed: false };
   const sizes = await transcriptSizes($);
   const due: Due[] = [];
+  let progressed = false;
   for (const agent of running) {
     const size = sizes.get(`agent-${agent.id}.jsonl`);
     const before = watch.get(agent.id);
     // claude-session-pool-plugin::REQ-007/AC-01: a size that cannot be read leaves the token count alone to count.
     const progress = before === undefined || before.tokens !== agent.tokenCount || (before.size !== undefined && size !== undefined && before.size !== size);
+    if (progress && before !== undefined) progressed = true;
     // A stall keeps its record until progress ends it, so a report that Claude Code takes after a later look marks the
     // stall that is still watched (claude-session-pool-plugin::REQ-006).
     const seen: Seen = progress ? { quiet: 0, size, tokens: agent.tokenCount, reported: false } : Object.assign(before, { quiet: before.quiet + 1, size });
     watch.set(agent.id, seen);
     if (seen.quiet >= STALLED_AFTER && !seen.reported) due.push({ line: stalledLine(agent, seen.quiet), seen });
   }
-  return due;
+  return { due, progressed };
 }
 
 /** The sizes of the subagents' transcripts by file name; none where Claude Code gives no transcript or the directory cannot be listed. */

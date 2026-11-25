@@ -37,7 +37,7 @@ async function connect({ dispatcher } = { dispatcher: true }) {
   mac.transcriptRoot = transcriptRoot;
   const wake = new WakeState(join(home, "state"));
   // The plugin's hooks and its mod run in the sessions of this Mac, so the attached session has a hook record.
-  mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid) });
+  mac.hooks = (input, sessionPid) => runHook(input, { state: wake, sessionPid, isAlive: (pid) => mac.processes.isAlive(pid), now: Date.now });
   mac.modWatches = join(home, "state", "clear-orders");
   const attached = mac.addSession({ name: "attached", cwd: directory, pid: ATTACHED_PID, status: "busy" });
   mac.appendTurnRecord(attached.sessionId!);
