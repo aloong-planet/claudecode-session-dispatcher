@@ -88,6 +88,12 @@ export const newMonitor = (): Monitor => ({
 
 const newSlot = (): Slot => ({ livened: 0, live: false, goneReported: 0, ambiguousReported: undefined, waiting: undefined, unrecorded: undefined, stall: undefined, stop: undefined });
 
+/**
+ * A slot a pool tool's call acted on: it counts as not seen live and its runs of looks break, while a condition that was
+ * dealt with stays dealt with for as long as it lasts (claude-session-pool-monitor::US-001/AC-09).
+ */
+const leftOutSlot = (slot: Slot | undefined): Slot => ({ ...newSlot(), ambiguousReported: slot?.ambiguousReported, stall: slot?.stall, stop: slot?.stop });
+
 /** A pool tool's call that acts on the slots `names` has started: looks leave them out until it has returned. */
 export function actingStarts(monitor: Monitor, names: readonly string[]): void {
   for (const name of names) monitor.acting.set(name, (monitor.acting.get(name) ?? 0) + 1);
@@ -100,7 +106,7 @@ export function actingEnds(monitor: Monitor, names: readonly string[]): void {
     if (left > 0) monitor.acting.set(name, left);
     else monitor.acting.delete(name);
     monitor.returned.set(name, (monitor.returned.get(name) ?? 0) + 1);
-    monitor.slots.set(name, newSlot());
+    monitor.slots.set(name, leftOutSlot(monitor.slots.get(name)));
   }
 }
 
@@ -127,7 +133,7 @@ export async function judgePool($: MonitorEngine, monitor: Monitor, sight: Sight
   for (const seen of sight.slots) {
     const { name } = seen.slot;
     if (leftOut(name)) {
-      monitor.slots.set(name, newSlot());
+      monitor.slots.set(name, leftOutSlot(monitor.slots.get(name)));
       continue;
     }
     const slot = monitor.slots.get(name) ?? newSlot();

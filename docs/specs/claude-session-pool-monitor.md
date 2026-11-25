@@ -35,7 +35,7 @@ As a dispatcher session, I am woken with a report when a slot stops, stalls, wai
 
 - claude-session-pool-monitor::REQ-002/AC-01: A stopped slot has told the dispatcher session when the dispatcher session's transcript records a cross-session message received from the slot's session that arrived no earlier than 5 minutes before the end of the slot's last turn. The message's text is not read: only its sender and its time of arrival count.
 - claude-session-pool-monitor::REQ-002/AC-02: A received message is from the slot's session when the address it was sent from names that session's process ID.
-- claude-session-pool-monitor::REQ-002/AC-03: When the dispatcher session's transcript cannot be found or read, or holds no record from before that time, as after a `/clear` of the dispatcher session, the slot counts as not having told it, and the report says that this could not be read.
+- claude-session-pool-monitor::REQ-002/AC-03: When the dispatcher session's transcript cannot be found or read, or holds no record from before that time and no such message, as after a `/clear` of the dispatcher session, the slot counts as not having told it, and the report says that this could not be read.
 
 ### claude-session-pool-monitor::REQ-003 The monitor says when it cannot see the pool
 

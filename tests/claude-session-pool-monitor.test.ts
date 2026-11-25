@@ -673,6 +673,22 @@ describe("a stalled slot (claude-session-pool-monitor::US-001/AC-06)", () => {
     expect(pool.mod.prompts).toEqual([report(`- wa: busy, and it made no progress for 12 minutes. ${running}`)]);
   });
 
+  it("is reported at the first look that finds it busy after it waited on the user's permission, with the minutes from before it was asked (claude-session-pool-monitor, \"waits on the user's permission\")", async () => {
+    const pool = await dispatcher(["wa"]);
+    const wa = await pool.worker(W1);
+    await wa.loads(-30 * MINUTE);
+    await wa.startsCall("Bash", -13 * MINUTE);
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "waiting", { waitingFor: "permission prompt" })]);
+    await pool.looks(3);
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "busy")]);
+    await pool.looks();
+
+    expect(pool.mod.prompts).toEqual([
+      report("- wa: waiting for permission prompt."),
+      report("- wa: busy, and it made no progress for 17 minutes. Its tool call Bash has been running for 17 minutes."),
+    ]);
+  });
+
   it("is reported anew when it stalls after it made progress again (claude-session-pool-monitor::US-001/AC-09)", async () => {
     const { pool, wa } = await busy(undefined);
     await pool.looks(4);
@@ -796,6 +812,14 @@ describe("a stopped slot (claude-session-pool-monitor::US-001/AC-07, REQ-002)", 
 
     expect(pool.mod.prompts).toEqual([report(NOT_READ)]);
   });
+
+  it("counts as having told it by a message in a transcript that holds no record from before that time, as after a /clear (claude-session-pool-monitor::REQ-002/AC-03)", async () => {
+    const { pool } = await stops((endedAt) => [titled, userRecord(endedAt - 2 * MINUTE, "Go on."), received(501, endedAt + MINUTE)]);
+
+    await pool.looks(6);
+
+    expect(pool.mod.prompts).toEqual([]);
+  });
 });
 
 describe("an unrecorded slot (claude-session-pool-monitor::US-001/AC-08)", () => {
@@ -857,12 +881,13 @@ describe("a slot's run of looks (claude-session-pool-monitor, \"in a row\")", ()
     const pool = await dispatcher(["wa", "wb"]);
     await (await pool.worker(W1)).loads();
     pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "waiting", { waitingFor: "permission prompt" }), pool.entry(502, "wb", W2, "idle")]);
-    await pool.looks(2);
+    await pool.looks();
     blind(pool.mod);
     await pool.looks();
     restore(pool.mod);
-    await pool.looks();
+    await pool.looks(2);
 
+    // wa's second look in a row and wb's third each come after the look passed over.
     expect(pool.mod.prompts).toEqual([
       report("- wa: waiting for permission prompt."),
       report("- wb: its session writes no activity record, so whether it makes progress is not known."),
@@ -983,6 +1008,56 @@ describe("a slot a pool tool is acting on (claude-session-pool-monitor, \"A pool
     expect(after).toBe(0);
     expect(pool.mod.prompts).toEqual([report("- wa: waiting for permission prompt.")]);
   });
+
+  it.each<[string, string, (pool: Pool) => Promise<void>, string]>([
+    [
+      "ambiguous",
+      "close",
+      (pool) => {
+        pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle"), pool.entry(502, "wa", W2, "idle")]);
+        return Promise.resolve();
+      },
+      "- wa: ambiguous. 2 live sessions in the pool directory answer to this name.",
+    ],
+    [
+      "stalled",
+      "compact",
+      async (pool) => {
+        const wa = await pool.worker(W1);
+        await wa.loads(-30 * MINUTE);
+        await wa.turnStarts(-20 * MINUTE);
+        await wa.turnEnds(-12 * MINUTE);
+        pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "busy")]);
+      },
+      "- wa: busy, and it made no progress for 13 minutes. No tool call of its own is running.",
+    ],
+    [
+      "stopped",
+      "restore",
+      async (pool) => {
+        const wa = await pool.worker(W1);
+        await wa.loads(-30 * MINUTE);
+        await wa.turnStarts(-10 * MINUTE);
+        pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "busy")]);
+        await pool.looks();
+        await wa.turnEnds();
+        pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle")]);
+        pool.transcript([titled, userRecord(pool.mod.time.now - 60 * MINUTE, "Run the pool.")]);
+        await pool.looks(4);
+      },
+      "- wa: idle for 5 minutes since its last turn ended, and it sent this session no message since 5 minutes before that.",
+    ],
+  ])("is not reported again as %s, while that lasts, once a call to %s that named it has returned (claude-session-pool-monitor::US-001/AC-09)", async (_, name, condition, line) => {
+    const pool = await dispatcher(["wa"]);
+    await condition(pool);
+    await pool.looks();
+    const refused = { result: "wa was left as it is", text: "wa was left as it is", isError: true };
+    await (await pool.mod.startsCall(tool(name), undefined, name === "restore" ? { names: ["wa"] } : { name: "wa" }, refused)).returns();
+
+    await pool.looks(3);
+
+    expect(pool.mod.prompts).toEqual([report(line)]);
+  });
 });
 
 describe("a report of the pool monitor (claude-session-pool-plugin::REQ-005, claude-session-pool-monitor, \"The mod is loaded\")", () => {
@@ -1016,22 +1091,36 @@ describe("a report of the pool monitor (claude-session-pool-plugin::REQ-005, cla
     expect(pool.mod.prompts).toEqual([line, line]);
   });
 
-  it("is made again, after the mod is loaded again, of an ambiguous and an unrecorded slot it reported before", async () => {
-    const pool = await dispatcher(["wa", "wb"]);
-    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle"), pool.entry(502, "wa", W2, "idle"), pool.entry(503, "wb", W3, "idle")]);
+  it("is made again, after the mod is loaded again, of an ambiguous, a stalled and an unrecorded slot it reported before", async () => {
+    const pool = await dispatcher(["wa", "wb", "wc"]);
+    const wc = await pool.worker(W5A);
+    await wc.loads(-30 * MINUTE);
+    await wc.turnStarts(-20 * MINUTE);
+    await wc.turnEnds(-13 * MINUTE);
+    pool.mod.listing.text = JSON.stringify([
+      pool.entry(501, "wa", W1, "idle"),
+      pool.entry(502, "wa", W2, "idle"),
+      pool.entry(503, "wb", W3, "idle"),
+      pool.entry(504, "wc", W5A, "busy"),
+    ]);
     await pool.looks(3);
     await pool.mod.reload();
     await pool.looks(3);
 
-    const ambiguous = report("- wa: ambiguous. 2 live sessions in the pool directory answer to this name.");
+    const ambiguous = "- wa: ambiguous. 2 live sessions in the pool directory answer to this name.";
+    const stalled = (minutes: number) => `- wc: busy, and it made no progress for ${minutes} minutes. No tool call of its own is running.`;
     const unrecorded = report("- wb: its session writes no activity record, so whether it makes progress is not known.");
-    expect(pool.mod.prompts).toEqual([ambiguous, unrecorded, ambiguous, unrecorded]);
+    expect(pool.mod.prompts).toEqual([report(ambiguous, stalled(14)), unrecorded, report(ambiguous, stalled(17)), unrecorded]);
   });
 });
 
 describe("worker sessions are only read (claude-session-pool-monitor::CON-001, REQ-001/AC-01)", () => {
   it("over a run that meets every condition: runs the listing alone, reads only its state directory and its own transcript, writes only the look record and its own activity record, and only prompts its own session", async () => {
-    const pool = await dispatcher(["wa", "wb", "wc", "wd", "we", "wf"]);
+    const pool = await dispatcher(["wa", "wb", "wc", "wd", "we", "wf", "wg"]);
+    // wg is gone at the first look, and the last look before the mod was loaded found work in its conversation.
+    mkdirSync(join(pool.stateDirectory, "pool-states"), { recursive: true });
+    const wgEntry = { name: "wg", sessionId: "6d4e3f2a-1b0c-4d9e-9f8a-7b6c5d4e3f2a", state: "busy", seenAt: "2026-11-22T02:00:00.000Z", worked: true };
+    writeFileSync(pool.lookRecordPath, JSON.stringify({ version: 1, directory: pool.real, slots: [wgEntry] }));
     const [wa, wc, wd, we] = [await pool.worker(W1), await pool.worker(W3), await pool.worker(W5A), await pool.worker(W5B)];
     for (const each of [wa, wc, wd, we]) await each.loads(-30 * MINUTE);
     await we.turnStarts(-20 * MINUTE);
@@ -1060,6 +1149,7 @@ describe("worker sessions are only read (claude-session-pool-monitor::CON-001, R
     const lines = reportsOf(pool).flatMap((text) => text.split("\n").slice(1, -1));
     expect(lines).toEqual(
       expect.arrayContaining([
+        "- No live session in the pool directory answers to these slots of the roster: wg. The restore tool brings back the unfinished conversations of: wg.",
         "- wb: ambiguous. 2 live sessions in the pool directory answer to this name.",
         "- wc: waiting for permission prompt.",
         "- wf: its session writes no activity record, so whether it makes progress is not known.",
