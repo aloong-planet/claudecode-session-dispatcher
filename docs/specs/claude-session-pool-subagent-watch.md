@@ -26,12 +26,12 @@ Applies to: the looks and the reports. The mod reads what Claude Code lists of t
 
 ## Failure modes and boundaries
 
-- **A subagent is inside one tool call for 11 minutes or more**: when neither its transcript nor its token count changes meanwhile, it is reported as stalled.
+- **A subagent is inside one tool call for as long as a stall takes** ([claude-session-pool-subagent-watch::US-001/AC-02](claude-session-pool-subagent-watch.md)): neither its transcript nor its token count changes meanwhile, so it is reported as stalled.
 - **A subagent waits for a permission or for an answer**: it is judged like any other subagent, and the report does not say what it waits for.
 - **A subagent waits on work it started itself**, a background command or a subagent of its own: Claude Code lists it as waiting and not as running a turn, so it is not judged and never reported; a subagent it started is judged on its own.
 - **A subagent runs for a long time and keeps making progress**: nothing is reported.
 - **A subagent runs in the foreground of a turn of the session**: a report waits for that turn to end ([claude-session-pool-plugin::REQ-005/AC-02](claude-session-pool-plugin.md)). The subagent has ended by then, so nothing is reported of it.
-- **The mod is loaded again**: the looks are counted anew, and a subagent that was reported before can be reported once more for the same stall.
+- **The mod is loaded again**: a subagent that was reported before can be reported once more for the same stall.
 - **Claude Code does not give the list of subagents at a look, or gives something that is not a list**: that look finds no subagent running a turn, so every count starts anew, and nothing is reported of the failure itself. For as long as the list keeps failing, no stall is reported.
 - **A subagent's type or description does not pass the form stated under "Text of a report"**: the line leaves that part out.
 
@@ -59,5 +59,5 @@ The report's text is the first line below, one line for each subagent that is du
 
 - **Background commands of the session.** A mod cannot list them; a command ends by the time limit it was started with.
 - **Ending or stopping a subagent.** What follows a report is decided by the session.
-- **A limit on how long a subagent runs.** A subagent that makes progress is never reported, however long it runs; the time limit that the session set when it started the subagent stays with the session.
+- **A limit on how long a subagent runs.** The time limit that the session set when it started the subagent stays with the session.
 - **Agent-team teammates and the agents of a workflow.** Teammates are not judged, and Claude Code does not list a workflow's agents.

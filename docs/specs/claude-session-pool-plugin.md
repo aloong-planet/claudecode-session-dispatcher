@@ -33,7 +33,7 @@ In every interactive session in which the mod runs, the mod makes a look every 6
 ### claude-session-pool-plugin::REQ-005 A report of the mod starts one turn
 
 - claude-session-pool-plugin::REQ-005/AC-01: The mod makes a report by submitting its text to the session as a prompt, at a look at which no turn is running in the session. Nothing is typed into a window. The lines that are due for one feature at one look make one report.
-- claude-session-pool-plugin::REQ-005/AC-02: At a look at which a turn is running in the session, the mod holds a request for a compaction ([claude-session-pool-compact-self](claude-session-pool-compact-self.md), "The mod's part"), or a compaction it asked for is running, the mod submits nothing. What was due stays due, and is reported at the first later look at which none of the three holds and which still finds it.
+- claude-session-pool-plugin::REQ-005/AC-02: At a look at which a turn is running in the session, the mod holds a request for a compaction ([claude-session-pool-compact-self](claude-session-pool-compact-self.md), "The mod's part"), a compaction it asked for is running, or a report it submitted has not been answered yet, the mod submits nothing. What was due stays due, and is reported at the first later look at which none of the four holds and which still finds it.
 - claude-session-pool-plugin::REQ-005/AC-03: When Claude Code does not take the prompt, the report counts as not made, and what was due stays due as claude-session-pool-plugin::REQ-005/AC-02 states.
 - claude-session-pool-plugin::REQ-005/AC-04: The text of a report is made of fixed sentences, which the feature states. Its first line says that the cc-session-pool plugin wrote it and that it is not a message from the user.
 
