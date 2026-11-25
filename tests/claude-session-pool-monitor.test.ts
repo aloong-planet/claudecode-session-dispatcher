@@ -737,7 +737,8 @@ describe("a stopped slot (claude-session-pool-monitor::US-001/AC-07, REQ-002)", 
     const pool = await dispatcher(["wa", "wb"]);
     const wa = await pool.worker(W1);
     await wa.loads(-30 * MINUTE);
-    await (await pool.worker(W2)).loads(-30 * MINUTE);
+    const wb = await pool.worker(W2);
+    await wb.loads(-30 * MINUTE);
     await wa.turnStarts(-10 * MINUTE);
     pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "busy"), pool.entry(502, "wb", W2, "idle")]);
     await pool.looks();
@@ -746,7 +747,7 @@ describe("a stopped slot (claude-session-pool-monitor::US-001/AC-07, REQ-002)", 
     pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle"), pool.entry(502, "wb", W2, "idle")]);
     const written = records(endedAt);
     if (written !== undefined) pool.transcript(written);
-    return { pool, wa, endedAt };
+    return { pool, wa, wb, endedAt };
   }
   const opened = (endedAt: number) => [titled, userRecord(endedAt - 60 * MINUTE, "Run the pool.")];
   const NOT_TOLD = "- wa: idle for 5 minutes since its last turn ended, and it sent this session no message since 5 minutes before that.";
@@ -917,6 +918,27 @@ describe("a stopped slot (claude-session-pool-monitor::US-001/AC-07, REQ-002)", 
     await pool.looks(2);
 
     expect(pool.mod.prompts).toEqual([]);
+  });
+
+  it("is reported at a look at which its transcript became shorter between its measure and its read, and a later look reads on from what that look took (claude-session-pool-monitor::REQ-002/AC-01)", async () => {
+    const { pool, wb, endedAt } = await stops(opened);
+    await pool.looks(4);
+    // wb's stop is judged at a later look, by wb's message in the record that the file loses part of at wa's look.
+    await wb.turnStarts();
+    await wb.turnEnds();
+    const line = JSON.stringify(received(502, endedAt + 4 * MINUTE + 30_000));
+    const read = statSync(pool.mod.conversation.transcriptPath).size;
+    pool.transcript([line], { append: true });
+    pool.mod.conversation.cutAfterStat = read + 120;
+    await pool.looks();
+    // Taken before the file has its record back: a look that does not end at the short read has made no report by then.
+    const atShortRead = [...pool.mod.prompts];
+    pool.transcript([], { append: true, unfinished: `${line.slice(120)}\n` });
+
+    await pool.looks(5);
+
+    expect(atShortRead).toEqual([report(NOT_TOLD)]);
+    expect(pool.mod.prompts).toEqual([report(NOT_TOLD)]);
   });
 
   it.each([

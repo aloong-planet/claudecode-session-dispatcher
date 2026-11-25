@@ -4,7 +4,7 @@
  * decide how each compaction ends, whether a prompt is taken, which context figures Claude Code has and which subagents
  * it lists. `modSetup` registers the mod's own `register` in it.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { register } from "../../plugin/hooks/register.ts";
 import { WakeState } from "../../src/wake.ts";
@@ -113,8 +113,12 @@ export async function modSetup({ interactive = true, told = true, registerFails 
   /** Every call the mod made to the engine, as `<noun>.<method>`. */
   const engineCalls: string[] = [];
   // Beside the session's transcript, the directory of its subagents' transcripts, laid out as Claude Code 2.1.327 does.
-  /** The transcript of the session's present conversation, as `$.session.info()` gives it; a `/clear` names a new one. */
-  const conversation = { transcriptPath: join(home, ".claude", "projects", "-somewhere", `${SESSION}.jsonl`) };
+  /**
+   * The transcript of the session's present conversation, as `$.session.info()` gives it; a `/clear` names a new one.
+   * `cutAfterStat`: the length the transcript is cut to once the next stat of it has been answered, as a file that becomes
+   * shorter between its stat and a read of it.
+   */
+  const conversation = { transcriptPath: join(home, ".claude", "projects", "-somewhere", `${SESSION}.jsonl`), cutAfterStat: undefined as number | undefined };
   const subagentDirectory = join(home, ".claude", "projects", "-somewhere", SESSION, "subagents");
   /** The subagents Claude Code lists to the mod; `fails`: it rejects the call. */
   const agents = { listed: [] as ListedAgent[], fails: false };
@@ -170,6 +174,10 @@ export async function modSetup({ interactive = true, told = true, registerFails 
       stat: (path: string, options?: { resolve?: boolean }) =>
         Promise.resolve().then(() => {
           const stat = statSync(path);
+          if (path === conversation.transcriptPath && conversation.cutAfterStat !== undefined) {
+            truncateSync(path, conversation.cutAfterStat);
+            conversation.cutAfterStat = undefined;
+          }
           return { kind: stat.isDirectory() ? "dir" : "file", size: stat.size, mtimeMs: stat.mtimeMs, ...(options?.resolve ? { realPath: realpathSync(path) } : {}) };
         }),
       list: (path: string) =>

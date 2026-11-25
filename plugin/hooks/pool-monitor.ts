@@ -318,14 +318,16 @@ async function receivedMessages($: MonitorEngine, monitor: Monitor): Promise<Rec
       read = monitor.transcript = { path, offset: 0, passingOver: false, received: { earliest: undefined, messages: [] } };
     while (read.offset < size) {
       const from = read.offset;
-      const bytes = bytesOf((await $.fs.read(path, { as: "bytes", offset: from, length: Math.min(RANGE_BYTES, size - from) })).base64);
-      // The file has become shorter since it was measured: a later look reads it.
-      if (bytes.length === 0) break;
+      const asked = Math.min(RANGE_BYTES, size - from);
+      const bytes = bytesOf((await $.fs.read(path, { as: "bytes", offset: from, length: asked })).base64);
+      // Fewer bytes than asked: the file has become shorter since it was measured, and a later look goes on from here.
+      const shortened = bytes.length < asked;
       let start = 0;
       if (read.passingOver) {
         start = bytes.indexOf(NEWLINE) + 1;
         if (start === 0) {
           read.offset += bytes.length;
+          if (shortened) break;
           continue;
         }
         read.passingOver = false;
@@ -337,7 +339,8 @@ async function receivedMessages($: MonitorEngine, monitor: Monitor): Promise<Rec
         // A whole range from the start of a record holds no newline: the record is longer than one range.
         read.passingOver = true;
         read.offset = from + bytes.length;
-      } else if (from + bytes.length >= size) break;
+      }
+      if (shortened || from + asked >= size) break;
       // Else the next range starts at the record that this range's end cut.
     }
     return read.received;
