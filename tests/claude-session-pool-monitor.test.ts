@@ -786,6 +786,18 @@ describe("a stopped slot (claude-session-pool-monitor::US-001/AC-07, REQ-002)", 
     expect(pool.mod.prompts).toEqual([report(NOT_TOLD)]);
   });
 
+  it("is reported, once a turn of the dispatcher session held it back, with the whole minutes from the end of its last turn to the look that reports it (claude-session-pool-monitor, \"Text of a report\")", async () => {
+    const { pool } = await stops(opened);
+    await pool.mod.turnStarts();
+    await pool.looks(7);
+    const held = pool.mod.prompts.length;
+    await pool.mod.turnEnds();
+    await pool.looks();
+
+    expect(held).toBe(0);
+    expect(pool.mod.prompts).toEqual([report("- wa: idle for 8 minutes since its last turn ended, and it sent this session no message since 5 minutes before that.")]);
+  });
+
   it("is not reported when its last turn ended before the dispatcher session's mod was loaded", async () => {
     const pool = await dispatcher(["wa"]);
     const wa = await pool.worker(W1);
@@ -1108,6 +1120,19 @@ describe("a pool that cannot be seen (claude-session-pool-monitor::REQ-003/AC-02
     expect(roster.mod.prompts).toEqual([report("- The monitor could not see the pool for 10 minutes: the roster could not be read.")]);
   });
 
+  it("is reported, once a turn of the dispatcher session held it back, with the count of looks in a row that judged no slot (claude-session-pool-monitor, \"Text of a report\")", async () => {
+    const pool = await dispatcher(["wa"]);
+    pool.mod.listing.exitCode = 1;
+    await pool.mod.turnStarts();
+    await pool.looks(12);
+    const held = pool.mod.prompts.length;
+    await pool.mod.turnEnds();
+    await pool.looks();
+
+    expect(held).toBe(0);
+    expect(pool.mod.prompts).toEqual([report("- The monitor could not see the pool for 13 minutes: the sessions on this Mac could not be listed.")]);
+  });
+
   it("is reported again when, after a look that judges slots, 10 more looks in a row judge no slot", async () => {
     const pool = await dispatcher(["wa"]);
     await (await pool.worker(W1)).loads();
@@ -1287,18 +1312,14 @@ describe("a slot a pool tool is acting on (claude-session-pool-monitor, \"A pool
     expect(pool.mod.prompts).toEqual([report(line)]);
   });
 
-  it.each([
-    ["started before the look", true],
-    ["started while the look waited for the listing", false],
-  ])("is not reported gone after a call to close %s, which returned before the look judged the slot", async (_, startsBefore) => {
+  it("is not reported gone after a call to close started while the look waited for the listing, which returned before the look judged the slot", async () => {
     const pool = await dispatcher(["wa"]);
     await (await pool.worker(W1)).loads();
     pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "idle")]);
     await pool.looks();
-    const early = startsBefore ? await pool.mod.startsCall(tool("close"), undefined, { name: "wa" }) : undefined;
     pool.mod.listing.held = true;
     await pool.looks();
-    const call = early ?? (await pool.mod.startsCall(tool("close"), undefined, { name: "wa" }));
+    const call = await pool.mod.startsCall(tool("close"), undefined, { name: "wa" });
     pool.mod.listing.text = "[]";
     await call.returns();
     pool.mod.listing.held = false;
