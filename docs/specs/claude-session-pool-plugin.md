@@ -28,7 +28,7 @@ The mod answers calls to two tools: `mcp__plugin_cc-session-pool_pool__compact_s
 
 ### claude-session-pool-plugin::REQ-004 The mod looks once a minute (direct acceptance)
 
-In every interactive session in which the mod runs, the mod makes a look every 60 seconds, counted from the moment Claude Code loads it, whether or not a turn is running in the session. What it does at a look is stated in [claude-session-pool-subagent-watch](claude-session-pool-subagent-watch.md) and in claude-session-pool-plugin::REQ-007/AC-02 and claude-session-pool-plugin::REQ-008/AC-01.
+In every interactive session in which the mod runs, the mod makes a look every 60 seconds, counted from the moment Claude Code loads it, whether or not a turn is running in the session. What it does at a look is stated in [claude-session-pool-monitor](claude-session-pool-monitor.md), in [claude-session-pool-subagent-watch](claude-session-pool-subagent-watch.md) and in claude-session-pool-plugin::REQ-007/AC-02 and claude-session-pool-plugin::REQ-008/AC-01.
 
 ### claude-session-pool-plugin::REQ-005 A report of the mod starts one turn
 
@@ -83,12 +83,13 @@ The plugin declares two command hooks, each run with `node` and with its program
 
 ### State files
 
-The files of the plugin lie under `~/.claude-session-pool/`: `pools/` holds rosters ([claude-session-pool](claude-session-pool.md)), `hooks/` hook records, `wake-requests/` wake requests ([claude-session-pool-compact-self](claude-session-pool-compact-self.md)), `clear-orders/` clear orders ([claude-session-pool](claude-session-pool.md)) and `activity/` activity records.
+The files of the plugin lie under `~/.claude-session-pool/`: `pools/` holds rosters ([claude-session-pool](claude-session-pool.md)), `hooks/` hook records, `wake-requests/` wake requests ([claude-session-pool-compact-self](claude-session-pool-compact-self.md)), `clear-orders/` clear orders ([claude-session-pool](claude-session-pool.md)), `pool-states/` look records and `activity/` activity records.
 
 - A hook record is the file `~/.claude-session-pool/hooks/<pid>.json`, where `<pid>` is the process ID of the session, which is the hook's parent process. Content: a JSON object with `version` (the number `1`), `pid` and `sessionId`, the session ID the hook received.
 - A file of the three kinds that a hook, the server and the mod write for one another (hook record, wake request, clear order) that is not valid JSON, whose `version` is not `1`, or whose other fields are not in the form stated for it, is treated as absent; the tool that would write such a file writes over it. A session ID that contains anything but letters, digits and hyphens names no wake request, no clear order and no activity record.
 - Each file of those three kinds is replaced atomically when it is written.
 - An activity record is the file `~/.claude-session-pool/activity/<sessionId>.json`, which the mod writes and does not replace atomically. Content: a JSON object with `version` (the number `1`), `sessionId`, `writtenAt`, `turnRunning` (a boolean), `worked` (a boolean: whether a turn has started in the conversation), `progressAt`, and, where there is one, `lastTurnEndedAt` and `toolCall`, an object with `tool`, the tool's name as Claude Code gives it, and `startedAt`. Every time is in ISO 8601 form in UTC. A reader treats a record that is not in this form, or whose `sessionId` is not that of its file name, as absent.
+- `pool-states/` holds look records ([claude-session-pool](claude-session-pool.md), "Look records"), which the mod writes. A look record is not replaced atomically.
 
 ### Installation at user scope
 

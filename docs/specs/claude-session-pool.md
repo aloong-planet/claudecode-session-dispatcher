@@ -55,6 +55,7 @@ As a dispatcher session, I read the current state of every slot, so that I notic
 - claude-session-pool::US-005/AC-01: `status` lists every slot in the roster with its state and, for a live slot, its session ID. The state is one of `idle`, `busy`, `waiting`, `gone` and `ambiguous`; for `waiting` it also states what the session is waiting for, as Claude Code reports it.
 - claude-session-pool::US-005/AC-02: A slot that no live interactive session in the pool directory answers to is listed as `gone` and stays in the roster.
 - claude-session-pool::US-005/AC-03: A slot that more than one live interactive session in the pool directory answers to is listed as `ambiguous`.
+- claude-session-pool::US-005/AC-04: For a `gone` slot that has an entry in the pool's look record ("Look records"), `status` also states the session ID, the state and the time of that entry, and whether the entry says that the conversation had work in it.
 
 ### claude-session-pool::US-006 Close or replace a worker session
 
@@ -160,6 +161,8 @@ Boundaries and failures:
 - **A process of the same user writes a clear order** for a session's present session ID, the dispatcher session's included: the mod acts on it as on the server's (claude-session-pool::REQ-007/AC-02), and nothing checks who wrote it (ADR-0001).
 - **A hook of another plugin keeps the file-change event that told the mod of a clear order for longer than the mod keeps asking** ([claude-session-pool-plugin::REQ-002](claude-session-pool-plugin.md)): the order is not acted on, and `clear` ends unconfirmed (claude-session-pool::US-003/AC-02).
 - **The mod is loaded again**: it is told of no change under the directory of the clear orders until the session starts again, so a `clear` of that session ends unconfirmed (claude-session-pool::US-003/AC-02).
+- **No look was made in the dispatcher session**, because the plugin's mod does not run there: the pool has no look record, and `status` lists a `gone` slot without what claude-session-pool::US-005/AC-04 adds.
+- **The look record cannot be read, or is not in the form stated under "Look records"**: the pool counts as having no look record.
 - **The screen is locked**: Claude Code tells the mod of a change under the directory of the clear orders, and runs its `/clear`, as when the screen is unlocked (measured on Claude Code 2.1.327; a lock of hours has not been measured).
 
 ## Implementation Decisions
@@ -204,6 +207,12 @@ The processes of the server and the hooks, and the attached session, are describ
 - The server treats a slot's window as one it opened only when the slot is `"opened"` and the live session's process ID equals `pid`. A slot without `pid` is treated as not opened by the server. That includes a window whose session was not listed within 60 seconds of its opening: when the session appears later, `close` ends it and leaves its window open.
 - A missing file means an empty roster. A file whose `version` is not `1`, whose `directory` differs from the pool directory, or that is not valid JSON, is handled as the "cannot be parsed" failure above.
 - The file is replaced atomically on every change.
+
+### Look records
+
+- One file per pool: `~/.claude-session-pool/pool-states/<key>.json`, with the `<key>` of the pool's roster file. The mod of a dispatcher session writes it ([claude-session-pool-monitor::REQ-004](claude-session-pool-monitor.md)); the server only reads it.
+- Content: a JSON object with `version` (the number `1`), `directory` (the pool directory's absolute path, as in the roster) and `slots`, a list of objects with `name`, `sessionId`, `state` (`idle`, `busy` or `waiting`), `seenAt`, the time of the look, in ISO 8601 form in UTC, and `worked`, a boolean that says whether the conversation with that session ID has had work in it ([claude-session-pool-monitor::REQ-004](claude-session-pool-monitor.md)). An entry states what the look that last wrote it found. An entry whose `name` does not match claude-session-pool::CON-003/AC-01, or whose `sessionId` is not in the form of a session ID ([claude-session-pool-startup](claude-session-pool-startup.md), "Session IDs"), makes the file one that is not in this form.
+- A missing file means that no slot has an entry. A file whose `version` is not `1`, whose `directory` differs from the pool directory, or that is not in this form is handled as the failure "The look record cannot be read" above.
 
 ### Clear orders and the mod's part in `clear`
 
