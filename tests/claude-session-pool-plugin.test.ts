@@ -2,9 +2,11 @@
  * The plugin as Claude Code and a person run it: the declarations of the server, the hooks and the mod; the server and the
  * hooks as real processes, with `claude`, `ps` and `osascript` replaced by scripts on PATH, so that no Claude Code
  * session is started and Terminal is not touched; and the hook program as a function of the event Claude Code describes
- * to it and of the files under the state directory, which is a temporary directory there. What the mod does is covered in
- * `claude-session-pool-compact-self.test.ts` (`compact_self`), `claude-session-pool-context-usage.test.ts` (`context_usage`)
- * and `claude-session-pool.test.ts` (`clear`); the hook on `PostCompact`, in `claude-session-pool-compact-self.test.ts`.
+ * to it and of the files under the state directory, which is a temporary directory there; and the mod's looks and reports,
+ * in the fake engine of `support/mod-engine.ts`. What the mod does otherwise is covered in
+ * `claude-session-pool-compact-self.test.ts` (`compact_self`), `claude-session-pool-context-usage.test.ts` (`context_usage`),
+ * `claude-session-pool.test.ts` (`clear`) and `claude-session-pool-subagent-watch.test.ts` (what a look finds of the
+ * session's subagents); the hook on `PostCompact`, in `claude-session-pool-compact-self.test.ts`.
  *
  * Not covered here, because it needs real Claude Code sessions: that Claude Code loads the plugin from these
  * declarations, starts its server and its hooks as children of the session with the session's environment
@@ -17,11 +19,12 @@
  * print mode under a throwaway configuration directory, and are to be checked again when Claude Code changes how it
  * loads plugins or runs hooks.
  */
-import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { QUIET, hookSetup } from "./support/hook-state.ts";
+import { modSetup } from "./support/mod-engine.ts";
 import { OTHER_SESSION, SESSION } from "./support/sessions.ts";
 import {
   MARK,
@@ -86,7 +89,7 @@ describe("the plugin", () => {
     const { register } = (await import(join(pluginDirectory, "hooks", hooksFile.modules[0]!))) as { register: (on: (event: string, hook: Hook) => void) => void };
     const hooks = new Map<string, Hook>();
     register((event, hook) => void hooks.set(event, hook));
-    const engine = { tool: { register: () => Promise.resolve({}) }, session: { id: () => Promise.resolve("s-1") } };
+    const engine = { tool: { register: () => Promise.resolve({}) }, session: { id: () => Promise.resolve("s-1") }, clock: { every: () => () => {} } };
     const fromServer = { result: "from the server" };
     const [server] = Object.keys(manifest.mcpServers);
     await hooks.get("session.start")!(engine, { isInteractive: true }, () => Promise.resolve({}));
@@ -249,4 +252,195 @@ describe("the hook on input it has no use for", () => {
     expect(files("hooks")).toEqual([]);
     expect(files("wake-requests")).toEqual([`${SESSION}.json`]);
   });
+});
+
+/** What Claude Code 2.1.327 rejects a compaction with while a turn is in flight. */
+const COMPACTS_BETWEEN_TURNS = "cc-session-pool: $.session.compact: a turn is in flight; the conversation compacts between turns";
+const SUBAGENT = "a8c24a82d67a3ee4c";
+const OTHER_SUBAGENT = "a41633a00e77a2aa3";
+type Mod = Awaited<ReturnType<typeof modSetup>>;
+const reportsIn = (prompts: string[]) => prompts.filter((text) => text.startsWith("Report of the subagent watch, written by the cc-session-pool plugin."));
+
+describe("the mod's looks", () => {
+  it("are made once a minute in an interactive session, while a turn runs as well (claude-session-pool-plugin::REQ-004)", async () => {
+    const { intervals, startSubagent, turnStarts, turnEnds, look, prompts } = await modSetup();
+    startSubagent(SUBAGENT);
+
+    await turnStarts();
+    await look(12);
+    const duringTurn = [...prompts];
+    await turnEnds();
+    await look();
+
+    expect(intervals.map(({ ms }) => ms)).toEqual([60_000]);
+    expect(duringTurn).toEqual([]);
+    // The looks during the turn were counted: the report after it gives 12 looks in a row without progress.
+    expect(prompts).toEqual([expect.stringContaining(`- ${SUBAGENT} (general-purpose, "Run the test suite"): running, and neither its transcript nor its token count changed for 12 minutes.`)]);
+  });
+
+  it.each([
+    { what: "the session is not interactive", options: { interactive: false } },
+    { what: "the mod is not told that the session started", options: { told: false } },
+  ])("are not made when $what (claude-session-pool-plugin, \"not interactive\")", async ({ options }) => {
+    const { intervals, startSubagent, look, prompts } = await modSetup(options);
+    startSubagent(SUBAGENT);
+
+    await look(20);
+
+    expect(intervals).toEqual([]);
+    expect(prompts).toEqual([]);
+  });
+
+  it("start anew when the mod is loaded again, and a stall reported before is reported once more (claude-session-pool-plugin, \"loaded again\")", async () => {
+    const { startSubagent, look, reload, prompts } = await modSetup();
+    startSubagent(SUBAGENT);
+    await look(12);
+
+    await reload();
+    await look(11);
+    const beforeTwelfth = reportsIn(prompts).length;
+    await look();
+
+    expect(beforeTwelfth).toBe(1);
+    expect(reportsIn(prompts)).toHaveLength(2);
+    expect(prompts[1]).toContain("changed for 11 minutes.");
+  });
+});
+
+describe("a report of the mod", () => {
+  it("holds every line due at one look in one prompt (claude-session-pool-plugin::REQ-005/AC-01)", async () => {
+    const { startSubagent, look, prompts } = await modSetup();
+    startSubagent(SUBAGENT);
+    startSubagent(OTHER_SUBAGENT, { description: "parent probe" });
+
+    await look(12);
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]!.split("\n").slice(1, -1)).toEqual([
+      `- ${SUBAGENT} (general-purpose, "Run the test suite"): running, and neither its transcript nor its token count changed for 11 minutes.`,
+      `- ${OTHER_SUBAGENT} (general-purpose, "parent probe"): running, and neither its transcript nor its token count changed for 11 minutes.`,
+    ]);
+  });
+
+  it.each([
+    { what: "a turn is running", hold: (mod: Mod) => mod.turnStarts(), release: (mod: Mod) => mod.turnEnds() },
+    {
+      what: "a compaction request is held",
+      hold: async (mod: Mod) => {
+        await mod.calls();
+        await mod.turnEnds();
+        await mod.compactions[0]!.refuse(COMPACTS_BETWEEN_TURNS);
+      },
+      release: async (mod: Mod) => {
+        await mod.runTimers(2_000);
+        await mod.compactions[1]!.finish();
+      },
+    },
+    {
+      what: "a compaction the mod asked for is running",
+      hold: async (mod: Mod) => {
+        await mod.calls();
+        await mod.turnEnds();
+      },
+      release: (mod: Mod) => mod.compactions[0]!.finish(),
+    },
+  ])("waits while $what, and is made at the first look after (claude-session-pool-plugin::REQ-005/AC-02)", async ({ hold, release }) => {
+    const mod = await modSetup();
+    mod.startSubagent(SUBAGENT);
+    await hold(mod);
+
+    await mod.look(13);
+    const held = reportsIn(mod.prompts);
+    await release(mod);
+    const released = reportsIn(mod.prompts);
+    await mod.look();
+
+    expect([held, released]).toEqual([[], []]);
+    expect(reportsIn(mod.prompts)).toEqual([expect.stringContaining(`- ${SUBAGENT} `)]);
+    expect(reportsIn(mod.prompts)[0]).toContain("changed for 13 minutes.");
+  });
+
+  it("is not made of a stall that ended before the turn it waited for did (claude-session-pool-plugin::REQ-005/AC-02)", async () => {
+    const { agents, startSubagent, turnStarts, turnEnds, look, prompts } = await modSetup();
+    startSubagent(SUBAGENT);
+    await turnStarts();
+    await look(12);
+
+    agents.listed[0]!.tokenCount += 3_100;
+    await look();
+    await turnEnds();
+    await look();
+
+    expect(prompts).toEqual([]);
+  });
+
+  it.each([
+    { what: "rejects the prompt", kind: "reject" as const },
+    { what: "drops the prompt, as when the owner stopped the session and typed nothing since", kind: "drop" as const },
+  ])("is made again at the next look when Claude Code $what, and once only after it is taken (claude-session-pool-plugin::REQ-005/AC-03)", async ({ kind }) => {
+    const { promptAnswer, startSubagent, look, prompts } = await modSetup();
+    startSubagent(SUBAGENT);
+    promptAnswer.kind = kind;
+    await look(12);
+
+    promptAnswer.kind = "take";
+    await look();
+    await look(5);
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain(`- ${SUBAGENT} `);
+    expect(prompts[1]).toContain(`- ${SUBAGENT} `);
+  });
+
+  it("is not made twice while Claude Code has not answered the first prompt, nor after it takes it looks later (claude-session-pool-plugin::REQ-006)", async () => {
+    const { promptAnswer, startSubagent, look, prompts } = await modSetup();
+    startSubagent(SUBAGENT);
+    promptAnswer.kind = "hold";
+    await look(15);
+    const whileHeld = prompts.length;
+
+    promptAnswer.kind = "take";
+    await promptAnswer.takeHeld();
+    await look(5);
+
+    expect(whileHeld).toBe(1);
+    expect(prompts).toHaveLength(1);
+  });
+});
+
+describe("progress in a subagent", () => {
+  it.each([
+    { what: "its transcript alone grows", reportedAt: [17], at6: (mod: Mod) => mod.writeTranscript(SUBAGENT, 291_002) },
+    { what: "its token count alone changes", reportedAt: [17], at6: (mod: Mod) => void (mod.agents.listed[0]!.tokenCount = 48_524) },
+    {
+      what: "its transcript cannot be read and its token count changes",
+      reportedAt: [17],
+      before: (mod: Mod) => rmSync(join(mod.subagentDirectory, `agent-${SUBAGENT}.jsonl`)),
+      at6: (mod: Mod) => void (mod.agents.listed[0]!.tokenCount = 48_524),
+    },
+    { what: "its transcript cannot be read and its token count stays", reportedAt: [12], before: (mod: Mod) => rmSync(join(mod.subagentDirectory, `agent-${SUBAGENT}.jsonl`)), at6: () => {} },
+    { what: "its transcript can no longer be read and its token count stays", reportedAt: [12], at6: (mod: Mod) => rmSync(join(mod.subagentDirectory, `agent-${SUBAGENT}.jsonl`)) },
+    {
+      what: "its transcript can be read again and its token count stays",
+      reportedAt: [12],
+      before: (mod: Mod) => rmSync(join(mod.subagentDirectory, `agent-${SUBAGENT}.jsonl`)),
+      at6: (mod: Mod) => mod.writeTranscript(SUBAGENT, 284_744),
+    },
+  ])(
+    "is found when $what, and the count starts anew from that look (claude-session-pool-plugin::REQ-007/AC-01, claude-session-pool-subagent-watch::US-001/AC-02)",
+    async ({ reportedAt, before, at6 }: { reportedAt: number[]; before?: (mod: Mod) => void; at6: (mod: Mod) => void }) => {
+      const mod = await modSetup();
+      mod.startSubagent(SUBAGENT);
+      before?.(mod);
+
+      const reported: number[] = [];
+      for (let made = 1; made <= 20; made += 1) {
+        if (made === 6) at6(mod);
+        await mod.look();
+        if (mod.prompts.length > reported.length) reported.push(made);
+      }
+
+      expect(reported).toEqual(reportedAt);
+    },
+  );
 });

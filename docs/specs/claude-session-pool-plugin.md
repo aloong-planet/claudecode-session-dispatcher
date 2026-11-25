@@ -26,6 +26,25 @@ Where a feature of the plugin says that the mod asks Claude Code again after a r
 
 The mod answers calls to two tools: `mcp__plugin_cc-session-pool_pool__compact_self` ([claude-session-pool-compact-self::US-001/AC-02](claude-session-pool-compact-self.md)) and its own `context_usage` ([claude-session-pool-context-usage::US-001/AC-01](claude-session-pool-context-usage.md)). Every other tool call passes through it unchanged.
 
+### claude-session-pool-plugin::REQ-004 The mod looks once a minute (direct acceptance)
+
+In every interactive session in which the mod runs, the mod makes a look every 60 seconds, counted from the moment Claude Code loads it, whether or not a turn is running in the session. What it does at a look is stated in [claude-session-pool-subagent-watch](claude-session-pool-subagent-watch.md).
+
+### claude-session-pool-plugin::REQ-005 A report of the mod starts one turn
+
+- claude-session-pool-plugin::REQ-005/AC-01: The mod makes a report by submitting its text to the session as a prompt, at a look at which no turn is running in the session. Nothing is typed into a window. The lines that are due for one feature at one look make one report.
+- claude-session-pool-plugin::REQ-005/AC-02: At a look at which a turn is running in the session, the mod holds a request for a compaction ([claude-session-pool-compact-self](claude-session-pool-compact-self.md), "The mod's part"), a compaction it asked for is running, or a report it submitted has not been answered yet, the mod submits nothing. What was due stays due, and is reported at the first later look at which none of the four holds and which still finds it.
+- claude-session-pool-plugin::REQ-005/AC-03: When Claude Code does not take the prompt, the report counts as not made, and what was due stays due as claude-session-pool-plugin::REQ-005/AC-02 states.
+- claude-session-pool-plugin::REQ-005/AC-04: The text of a report is made of fixed sentences, which the feature states. Its first line says that the cc-session-pool plugin wrote it and that it is not a message from the user.
+
+### claude-session-pool-plugin::REQ-006 A condition is reported once (direct acceptance)
+
+Each condition that a feature reports is reported once, for as long as it lasts. A condition that ended and is found again is a new condition.
+
+### claude-session-pool-plugin::REQ-007 What the mod counts as progress
+
+- claude-session-pool-plugin::REQ-007/AC-01: A look finds progress in a subagent of the session when the size of its transcript, or the token count that Claude Code reports for it, differs from what the look before found. Where the size cannot be read, the token count alone counts.
+
 ## Constraints
 
 ### claude-session-pool-plugin::CON-001 One plugin carries the server, the hooks and the mod
@@ -44,6 +63,9 @@ Applies to: the server process, the hook processes and the start-up command; eac
 - **The `node` on a session's `PATH` is older than claude-session-pool-plugin::CON-002 requires**: the server does not start in that session, and Claude Code lists it as failed there; the hooks fail there too and write no hook record. Other sessions are not affected.
 - **The plugin's hooks do not run in a session**, for example because its settings switch all hooks off: no hook record exists for the session. Hooks that are switched off after the hook record was written are not detected.
 - **`/clear` is followed at once by a call that consults the hook record**: the record may still name the old session ID, and the plugin's hooks are then taken not to run in the session (claude-session-pool-plugin::REQ-001/AC-02).
+- **The mod is loaded again**, as when the session is restarted or a file of the plugin is saved: the looks start anew, and nothing the mod counted or reported before is kept.
+- **The owner has stopped the session and typed nothing since**: Claude Code takes no prompt from the mod, so every report waits (claude-session-pool-plugin::REQ-005/AC-03) until the owner sends input.
+- **The session is not interactive, or its Claude Code does not load the mod**: no look is made and nothing is reported.
 
 ## Implementation Decisions
 
@@ -71,6 +93,7 @@ The plugin's entry for the server runs `node` with the server's entry file in th
 - **Server and hook processes.** Claude Code starts one server process for each session that loads the server. The attached session is the live entry of the session listing ([claude-session-pool](claude-session-pool.md)) whose `pid` is the server's parent process. A server process and a hook process each start with the environment variables of their session, and their parent process is the session's process. For a hook that holds when its declaration gives the program and its arguments separately, so that no shell runs in between.
 - **`SessionStart` hooks.** Claude Code runs a plugin's `SessionStart` hooks when a session starts or is resumed, after `/clear` and after every compaction. They receive the session's `session_id`.
 - **Mods.** A plugin's hooks file can name a hooks module beside its command hooks; Claude Code loads that module, the plugin's mod, into the session's own process, in a session that is not interactive as well. Claude Code tells the mod when a session starts and whether it is interactive. It tells the mod of each tool call before the tool runs, a call to a tool of the plugin's server included, under the tool's full name and with the ID of the subagent that made it, if one did; the mod can return the result itself, and the tool then does not run. It tells the mod when a turn of the session starts and when it ends, and why it ended: with the model's answer, because the user interrupted it, on a refusal by the model, or on an API error. The mod can read and write files under the user's home directory. Claude Code's validator for plugins accepts a mod only when it passes the interface Claude Code hands it to functions declared at the top of the module. Claude Code loads the mod again when a file under a directory given with `--plugin-dir` is saved; whether it does so for an installed plugin that it uses in place has not been measured. Measured on Claude Code 2.1.322.
+- **A mod's timer and prompt.** A timer that the mod sets at its start fires at its interval while no turn is running in the session as well as during one, a tool call that is still running included, with no model request; when Claude Code loads the mod again, the earlier timer stops and the mod is started again. Claude Code answers a prompt that the mod submits with the prompt once the turn it starts has begun, and with a reason when it does not take it, as when the owner stopped the session and nobody has sent input since. Measured on Claude Code 2.1.327.
 
 ## Out of Scope
 
