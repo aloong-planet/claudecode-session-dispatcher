@@ -12,7 +12,7 @@ What the plugin does, in full, is in the specs, listed in [docs/specs/README.md]
 ## Requirements
 
 - **macOS with the Terminal app.** Worker sessions run in Terminal windows. When a session's call to `compact_self` is handled by the plugin's server rather than its mod, or the dispatcher session's `clear` is typed instead of left as an order (see [Tools](#tools)), the session must run in a Terminal window too. The plugin opens and types into Terminal windows through Terminal's scripting interface; when macOS refuses that automation request, the tool returns the error.
-- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325. `clear` through the mod was measured on 2.1.327 only, with the screen unlocked and with it locked for up to five minutes; it has not been measured on earlier versions or with a longer lock. What the subagent watch rests on was measured on 2.1.327 only.
+- **Claude Code 2.1.287 or later**, the version from which plugin mods are on by default. Tested on Claude Code 2.1.322; the live checks of `context_usage` also ran on 2.1.325. `clear` through the mod was measured on 2.1.327 only, with the screen unlocked and with it locked for up to five minutes; it has not been measured on earlier versions or with a longer lock. What the subagent watch and the look record rest on was measured on 2.1.327 only.
 - **Node.js 22.18 or later**, found on the `PATH` of the sessions that load the plugin. The server and the hooks run on it directly, with no build step.
 - **pnpm**, to install the packages the server needs.
 
@@ -71,7 +71,7 @@ A session sees each tool as `mcp__plugin_cc-session-pool_pool__<tool>`, except `
 | `context_usage` | every session in which the plugin's mod runs, interactive or not, unless Claude Code refuses the mod's tool | Reports the size of the session's own context: the input tokens of its latest model request, the context window of its model, and the share of the window they fill. |
 | `init`, `open` | the dispatcher session | Open worker sessions in new Terminal windows, in the pool's directory, and add them to the roster. |
 | `adopt` | the dispatcher session | Adds a session you opened by hand to the roster. |
-| `status` | the dispatcher session | Lists each slot's state: `idle`, `busy`, `waiting` (and for what), `gone` or `ambiguous`. |
+| `status` | the dispatcher session | Lists each slot's state: `idle`, `busy`, `waiting` (and for what), `gone` or `ambiguous`. For a `gone` slot that the plugin's mod saw live at a look, it also gives that look's session ID, state and time, and whether the conversation had work in it. |
 | `clear` | the dispatcher session | Resets a worker session's conversation and confirms that its session ID changed. Where the plugin's hooks run in the worker session, the plugin's mod runs `/clear` there; otherwise the server types it into the session's Terminal tab. |
 | `compact` | the dispatcher session | Types `/compact` into a worker session's Terminal tab and confirms that it took effect. |
 | `close`, `recycle` | the dispatcher session | End a worker session, or end it and open a new one under the same name. |

@@ -62,6 +62,6 @@ The mod takes its session as a dispatcher session by the rule of [claude-session
 
 ## Out of Scope
 
-- **Acting on a slot.** The monitor closes, recycles and messages nothing.
-- **Pausing the monitor, or choosing which slots it looks at.**
-- **A session that is not a dispatcher session**: its mod looks at no pool.
+- **Acting on a slot**: claude-session-pool-monitor::CON-001.
+- **Pausing the monitor, or choosing which slots it looks at**: claude-session-pool-monitor::US-001/AC-01.
+- **A session that is not a dispatcher session**: "Which session the monitor runs in".
