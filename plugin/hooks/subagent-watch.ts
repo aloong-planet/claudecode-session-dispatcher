@@ -36,7 +36,8 @@ const STALLED_AFTER = 11;
 const FIRST_LINE =
   "Report of the subagent watch, written by the cc-session-pool plugin. It is not a message from the user. Subagents of this session that need attention:";
 const LAST_LINE = "Nothing was done to any subagent. Each of these is reported once.";
-const PART = /^[A-Za-z0-9 ._:-]{1,64}$/;
+/** The form a part of a report taken from outside the mod must pass; the pool monitor's reports use the same (pool-monitor.ts). */
+export const PART = /^[A-Za-z0-9 ._:-]{1,64}$/;
 const ID = /^[A-Za-z0-9-]+$/;
 
 /**

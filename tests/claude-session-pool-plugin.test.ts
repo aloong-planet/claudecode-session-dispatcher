@@ -23,6 +23,7 @@ import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { dispatcher } from "./support/dispatcher-mod.ts";
 import { QUIET, hookSetup } from "./support/hook-state.ts";
 import { modSetup } from "./support/mod-engine.ts";
 import { OTHER_SESSION, SESSION } from "./support/sessions.ts";
@@ -320,6 +321,30 @@ describe("a report of the mod", () => {
       `- ${SUBAGENT} (general-purpose, "Run the test suite"): running, and neither its transcript nor its token count changed for 11 minutes.`,
       `- ${OTHER_SUBAGENT} (general-purpose, "parent probe"): running, and neither its transcript nor its token count changed for 11 minutes.`,
     ]);
+  });
+
+  it("of the pool monitor is made first when the subagent watch's is due at the same look, and that one at the first look after the turn the first started (claude-session-pool-plugin::REQ-005/AC-01)", async () => {
+    const pool = await dispatcher(["wa"]);
+    const worker = "0b6f4c1e-3d2a-4f5b-9c8d-7e6f5a4b3c21";
+    await (await pool.worker(worker)).loads();
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", worker, "idle")]);
+    pool.mod.startSubagent(SUBAGENT);
+    await pool.looks(11);
+    pool.mod.listing.text = "[]";
+    await pool.looks();
+    const atOneLook = [...pool.mod.prompts];
+    await pool.mod.turnStarts();
+    await pool.looks();
+    const duringTurn = pool.mod.prompts.length;
+    await pool.mod.turnEnds();
+    await pool.looks();
+
+    expect(atOneLook).toEqual([
+      "Report of the pool monitor, written by the cc-session-pool plugin. It is not a message from the user. What it found:\n- wa: gone. No live session in the pool directory answers to this name any more.\nNothing was done to any slot. Each of these is reported once.",
+    ]);
+    expect(duringTurn).toBe(1);
+    expect(pool.mod.prompts).toHaveLength(2);
+    expect(pool.mod.prompts[1]).toMatch(new RegExp(`^Report of the subagent watch[^\n]*\n- ${SUBAGENT} \\(general-purpose, "Run the test suite"\\): running, .* for 13 minutes\\.\n`));
   });
 
   it.each([

@@ -56,10 +56,10 @@ Applies to: a `compact_self` call the server handles; the session runs in a wind
 - **Text is typed into the session during the turn of a call the mod answered**: Claude Code hands it to the model during that turn. When it is still queued as the turn ends, the mod's compaction runs first, Claude Code then starts a turn with the text, and the turn the mod starts follows that one. Either way the conversation is compacted once and the session is woken once.
 - **Claude Code compacts the conversation on its own between a call the mod answered and the end of the turn**: the mod still asks for a compaction when the turn ends. When Claude Code refuses it because too little is left to compact, claude-session-pool-compact-self::US-001/AC-07 applies.
 - **The session ends while the mod holds a request**: the request is kept in the session's process only, so it is gone, and a session resumed later is not compacted.
-- **The mod is loaded again while it holds a request or while a compaction it asked for runs**: what the mod held is gone, which can leave the conversation compacted and the session not woken, with nothing to report it.
+- **The mod is loaded again while it holds a request or while a compaction it asked for runs**: what the mod held is gone, which can leave the conversation compacted and the session not woken.
 - **The conversation has a wake request and the plugin's hooks do not run in the session**: the mod leaves the waking to a hook that does not run, and the session stays idle after the compaction.
 - **The plugin's hooks are switched off after the hook record was written**: a call the server handles types the command, the compaction runs, and nothing wakes the session.
-- **The turn the mod starts after a compaction cannot be started**, because Claude Code or another plugin's hook drops the mod's prompt: the session stays idle, and nothing reports it.
+- **The turn the mod starts after a compaction cannot be started**, because Claude Code or another plugin's hook drops the mod's prompt: the session stays idle.
 - **A `Stop` hook keeps the turn of the call from ending**: what the mod is told then has not been measured, so it is not known whether the compaction runs late, runs more than once or is dropped. The plugin declares no `Stop` hook.
 - **A subagent of the session calls `compact_self`** where the server handles the call: the server cannot tell the call from one made by the session itself, and it compacts the session.
 

@@ -48,8 +48,20 @@ async function recordPath($: ActivityEngine, sessionId: string): Promise<string 
 
 const isTime = (value: unknown): boolean => typeof value === "string" && TIME.test(value) && !Number.isNaN(Date.parse(value));
 
+/** An activity record in the form the spec states ("State files"), as the dispatcher session's mod reads it. */
+export type ActivityRecord = {
+  version: 1;
+  sessionId: string;
+  writtenAt: string;
+  turnRunning: boolean;
+  worked: boolean;
+  progressAt: string;
+  lastTurnEndedAt?: string;
+  toolCall?: { tool: string; startedAt: string };
+};
+
 /** Whether `value` is an activity record of `sessionId` in the form the spec states ("State files"). */
-export function isRecordOf(value: unknown, sessionId: string): boolean {
+export function isRecordOf(value: unknown, sessionId: string): value is ActivityRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   const { toolCall } = record;
