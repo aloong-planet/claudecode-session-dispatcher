@@ -11,9 +11,9 @@
 // session ID, in a directory that the mod has Claude Code watch; when Claude Code tells the mod of a change there, and
 // when a turn ends, the mod looks for the order of the session's present session ID and, if it stands and is less than a
 // minute old, has Claude Code run /clear once no turn is running. Nothing is typed into the window and Terminal is not
-// scripted; whether this works while the screen is locked has not been measured. A session that this module is not
-// loaded in has no such order acted on: the server sees no change of the session ID, and reports that the clear is not
-// confirmed.
+// scripted. The mod acted on a clear order with the screen locked for up to five minutes (Claude Code 2.1.327); a
+// longer lock has not been measured. A session that this module is not loaded in has no such order acted on: the server
+// sees no change of the session ID, and reports that the clear is not confirmed.
 //
 // In every session, interactive or not, it also offers a tool of its own, context_usage, which answers the session
 // with the size of its own context as Claude Code's status line has it. A session this module is not loaded in has no

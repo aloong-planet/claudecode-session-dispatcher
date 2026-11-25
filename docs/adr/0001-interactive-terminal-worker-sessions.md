@@ -1,6 +1,6 @@
 # ADR-0001: Worker sessions are interactive sessions in Terminal windows, and are cleared through the plugin's mod where its hooks run
 
-- Status: Proposed
+- Status: Accepted (2026-11-25)
 
 ## Context
 
