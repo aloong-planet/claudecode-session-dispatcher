@@ -8,7 +8,7 @@
     {
       "name": "cc-session-pool",
       "source": "./plugin",
-      "description": "Gives every session a tool to compact its own conversation and wakes the session afterwards, a tool that reports the size of its own context where the plugin's mod runs and Claude Code accepts the mod's tool, and gives a dispatcher session the tools that manage its worker sessions in Terminal windows."
+      "description": "Gives every session a tool to compact its own conversation and wakes the session afterwards, a tool that reports the size of its own context where the plugin's mod runs and Claude Code accepts the mod's tool, and gives a dispatcher session the tools that manage its worker sessions in Terminal windows. In an interactive session where the mod runs, the mod starts a turn to report a stuck subagent and, in a dispatcher session, a slot of its pool that needs attention."
     }
   ]
 }
