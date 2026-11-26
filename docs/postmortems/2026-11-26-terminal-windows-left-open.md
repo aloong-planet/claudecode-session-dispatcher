@@ -23,4 +23,4 @@ Spec: [claude-session-pool](../specs/claude-session-pool.md), claude-session-poo
 
 - The test double puts up the sheet while processes of the window's own process group run on its device. Its lookup passes over a tab with no process, and a later window can be given a device that another window left.
 - Tests: `close` waits for the processes the session started (claude-session-pool::US-006/AC-01). It leaves the window open and names what is left at the limit (AC-02). A window that gets the device during the wait is not taken for the session's leftovers.
-- A live Terminal test gives a later window the device of a window whose program ended, puts the dead window first in Terminal's order, and checks that the lookup returns the live one.
+- A live Terminal test gives a later window the device of a window whose program ended, puts the dead window ahead of the live one in Terminal's order, and checks that the lookup returns the live one.
