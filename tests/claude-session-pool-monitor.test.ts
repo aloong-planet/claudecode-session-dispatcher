@@ -719,19 +719,105 @@ describe("a stalled slot (claude-session-pool-monitor::US-001/AC-06)", () => {
     expect(pool.mod.prompts).toEqual([report(`- wa: busy, and it made no progress for 12 minutes. ${running}`)]);
   });
 
-  it("is reported at the first look that finds it busy after it waited on the user's permission, with the minutes from before it was asked (claude-session-pool-monitor, \"waits on the user's permission\")", async () => {
+  it.each([
+    ["the user's permission", "permission prompt", "- wa: waiting for permission prompt."],
+    ["the user's answer to a question", "input needed", "- wa: waiting for input needed."],
+    ["a prompt the listing does not name", undefined, "- wa: waiting on a prompt."],
+  ])("is reported at the first look 12 minutes after the last look that found it waiting on %s, with the minutes of its tool call from the call's start", async (_, waitingFor, waitingLine) => {
     const pool = await dispatcher(["wa"]);
     const wa = await pool.worker(W1);
     await wa.loads(-30 * MINUTE);
     await wa.startsCall("Bash", -13 * MINUTE);
-    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "waiting", { waitingFor: "permission prompt" })]);
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "waiting", waitingFor === undefined ? {} : { waitingFor })]);
     await pool.looks(3);
     pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "busy")]);
+    await pool.looks(11);
+    const before = pool.mod.prompts.length;
     await pool.looks();
 
+    expect(before).toBe(1);
+    expect(pool.mod.prompts).toEqual([report(waitingLine), report("- wa: busy, and it made no progress for 12 minutes. Its tool call Bash has been running for 28 minutes.")]);
+  });
+
+  /** wa's session, loaded long before, started its tool call Bash 13 minutes before the dispatcher's present time. */
+  async function callStarted() {
+    const pool = await dispatcher(["wa"]);
+    const wa = await pool.worker(W1);
+    await wa.loads(-30 * MINUTE);
+    const call = await wa.startsCall("Bash", -13 * MINUTE);
+    const listed = (sessionId: string, state: string) =>
+      void (pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", sessionId, state, state === "waiting" ? { waitingFor: "permission prompt" } : {})]));
+    return { pool, wa, call, listed };
+  }
+  const WAITING = report("- wa: waiting for permission prompt.");
+
+  it("counts from progress the session made after the last look that found it waiting", async () => {
+    const { pool, call, listed } = await callStarted();
+    listed(W1, "waiting");
+    await pool.looks(2);
+    listed(W1, "busy");
+    await pool.looks(3);
+    await call.returns();
+    await pool.looks(11);
+    const before = pool.mod.prompts.length;
+    await pool.looks();
+
+    expect(before).toBe(1);
+    expect(pool.mod.prompts).toEqual([WAITING, report("- wa: busy, and it made no progress for 12 minutes. No tool call of its own is running.")]);
+  });
+
+  it("counts a look that found the slot waiting under another session ID as no progress of its present session", async () => {
+    const { pool, listed } = await callStarted();
+    const other = await pool.worker(W2);
+    await other.loads(-30 * MINUTE);
+    await other.startsCall("Read", -13 * MINUTE);
+    listed(W1, "waiting");
+    await pool.looks(2);
+    listed(W2, "busy");
+    await pool.looks();
+
+    expect(pool.mod.prompts).toEqual([WAITING, report("- wa: busy, and it made no progress for 16 minutes. Its tool call Read has been running for 16 minutes.")]);
+  });
+
+  it("counts no look that left the slot out for a pool tool, though the listing gave it waiting (claude-session-pool-monitor, \"A pool tool\")", async () => {
+    const { pool, listed } = await callStarted();
+    listed(W1, "waiting");
+    const acting = await pool.mod.startsCall(tool("compact"), undefined, { name: "wa" });
+    await pool.looks(3);
+    await acting.returns();
+    listed(W1, "busy");
+    await pool.looks();
+
+    expect(pool.mod.prompts).toEqual([report("- wa: busy, and it made no progress for 17 minutes. Its tool call Bash has been running for 17 minutes.")]);
+  });
+
+  it("forgets the looks that found the slot waiting once the mod is loaded again (claude-session-pool-monitor, \"The mod is loaded\")", async () => {
+    const { pool, listed } = await callStarted();
+    listed(W1, "waiting");
+    await pool.looks(2);
+    await pool.mod.reload();
+    listed(W1, "busy");
+    await pool.looks();
+
+    expect(pool.mod.prompts).toEqual([WAITING, report("- wa: busy, and it made no progress for 16 minutes. Its tool call Bash has been running for 16 minutes.")]);
+  });
+
+  it("counts a look that found the slot waiting while its record was no longer written, which judges the slot all the same (claude-session-pool-monitor::US-001/AC-08)", async () => {
+    const { pool, wa, listed } = await callStarted();
+    wa.writing = false;
+    listed(W1, "waiting");
+    await pool.looks(15);
+    wa.writing = true;
+    listed(W1, "busy");
+    await pool.looks(11);
+    const before = pool.mod.prompts.length;
+    await pool.looks();
+
+    expect(before).toBe(2);
     expect(pool.mod.prompts).toEqual([
-      report("- wa: waiting for permission prompt."),
-      report("- wa: busy, and it made no progress for 17 minutes. Its tool call Bash has been running for 17 minutes."),
+      WAITING,
+      report("- wa: its session writes no activity record, so whether it makes progress is not known."),
+      report("- wa: busy, and it made no progress for 12 minutes. Its tool call Bash has been running for 40 minutes."),
     ]);
   });
 
@@ -747,6 +833,24 @@ describe("a stalled slot (claude-session-pool-monitor::US-001/AC-06)", () => {
     expect(pool.mod.prompts).toEqual([
       report("- wa: busy, and it made no progress for 12 minutes. No tool call of its own is running."),
       report("- wa: busy, and it made no progress for 12 minutes. No tool call of its own is running."),
+    ]);
+  });
+
+  it("is reported anew when it stalls after it waited on a prompt (claude-session-pool-monitor::US-001/AC-09)", async () => {
+    const { pool } = await busy("Bash");
+    await pool.looks(2);
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "waiting", { waitingFor: "permission prompt" })]);
+    await pool.looks(2);
+    pool.mod.listing.text = JSON.stringify([pool.entry(501, "wa", W1, "busy")]);
+    await pool.looks(11);
+    const before = pool.mod.prompts.length;
+    await pool.looks();
+
+    expect(before).toBe(2);
+    expect(pool.mod.prompts).toEqual([
+      report("- wa: busy, and it made no progress for 12 minutes. Its tool call Bash has been running for 27 minutes."),
+      report("- wa: waiting for permission prompt."),
+      report("- wa: busy, and it made no progress for 12 minutes. Its tool call Bash has been running for 41 minutes."),
     ]);
   });
 });

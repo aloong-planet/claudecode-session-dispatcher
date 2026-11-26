@@ -38,6 +38,8 @@ type Slot = {
   ambiguousReported: number | undefined;
   /** The looks in a row that found the slot `waiting` for one thing under one session ID (US-001/AC-05). */
   waiting: { sessionId: string; what: string | undefined; looks: number; reported: boolean } | undefined;
+  /** The time of the last look that judged the slot and found it `waiting`, and the session ID it found (US-001/AC-06). */
+  waited: { sessionId: string; at: number } | undefined;
   /** The looks in a row that found the slot unrecorded under one session ID (US-001/AC-08). */
   unrecorded: { sessionId: string | undefined; looks: number; reported: boolean } | undefined;
   /** The stall and the stop that were dealt with: reported, or for a stop, found told (US-001/AC-06, AC-07, AC-09). */
@@ -105,7 +107,7 @@ export const newMonitor = (): Monitor => ({
   transcript: undefined,
 });
 
-const newSlot = (): Slot => ({ livened: 0, live: false, goneReported: 0, ambiguousReported: undefined, waiting: undefined, unrecorded: undefined, stall: undefined, stop: undefined });
+const newSlot = (): Slot => ({ livened: 0, live: false, goneReported: 0, ambiguousReported: undefined, waiting: undefined, waited: undefined, unrecorded: undefined, stall: undefined, stop: undefined });
 
 /**
  * The slot `name`, which a pool tool's call acted on: it counts as not seen live, so that it is not reported `gone` before
@@ -242,6 +244,7 @@ async function slotLines(slot: Slot, seen: SlotSight, at: number, loadedAt: numb
     const run = slot.waiting?.sessionId === sessionId && slot.waiting.what === waitingFor ? slot.waiting : { sessionId, what: waitingFor, looks: 0, reported: false };
     run.looks += 1;
     slot.waiting = run;
+    slot.waited = { sessionId, at };
     if (run.looks >= WAITING_LOOKS && !run.reported) {
       const what = waitingFor !== undefined && WAITING_FOR.test(waitingFor) ? `waiting for ${waitingFor}` : "waiting on a prompt";
       lines.push({ text: `- ${name}: ${what}.`, reported: () => (run.reported = true) });
@@ -257,8 +260,10 @@ async function slotLines(slot: Slot, seen: SlotSight, at: number, loadedAt: numb
   }
   slot.unrecorded = undefined;
   if (session.status === "busy") {
-    const progressAt = Date.parse(record.progressAt);
-    const stall = `${record.sessionId} ${record.progressAt}`;
+    // US-001/AC-06: the last look that found the session `waiting` counts as progress, which the record does not show.
+    const { waited } = slot;
+    const progressAt = Math.max(Date.parse(record.progressAt), waited?.sessionId === record.sessionId ? waited.at : Number.NEGATIVE_INFINITY);
+    const stall = `${record.sessionId} ${progressAt}`;
     if (at - progressAt >= STALLED_MS && slot.stall !== stall) {
       const { toolCall } = record;
       const running =
