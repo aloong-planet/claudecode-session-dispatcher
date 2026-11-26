@@ -4,6 +4,8 @@ import type { Clock, Launch, Processes, SessionEntry, SessionLister, TabRef, Ter
 
 export type FakeSession = SessionEntry & {
   tty?: string;
+  /** The process group of the session, which is that of the window it runs in. */
+  group?: number;
   model?: string;
   permissionMode?: string;
   /** Text that sits in the session's input box, not yet submitted. */
@@ -14,7 +16,8 @@ export type FakeSession = SessionEntry & {
   queued?: string[];
 };
 
-type FakeWindow = { id: number; tty: string; open: boolean; tabCount: number; text: string };
+/** `group`: the process group of the window's tab, that of its login process, which the session it runs and what that session starts are in. */
+type FakeWindow = { id: number; tty: string; group: number; open: boolean; tabCount: number; text: string };
 
 /**
  * A stand-in for the Mac the pool runs on: Claude Code's session listing, the Terminal application, process
@@ -42,13 +45,19 @@ export class FakeMac {
   recordsQueue = true;
   /** Whether a session ends when asked to. */
   endsWhenAsked = true;
+  /** How long a session that ends when asked to takes to end. */
+  endsAfterMs = 2000;
   /**
    * How long the processes a session started stay on its terminal device after the session's own process ended, as a
    * tool server that is slow to quit does. `"forever"`: they never leave. Left out: they end with the session.
    */
   childrenOutliveMs: number | "forever" | undefined;
   /** Processes that stay on a terminal device after the session that started them ended; gone once `until` has passed. */
-  lingering: { tty: string; pid: number; command: string; until: number }[] = [];
+  lingering: { tty: string; pid: number; group: number; command: string; until: number }[] = [];
+  /** The terminal device the next window gets, as the system gives a device that no process uses any more to a window opened later. */
+  nextWindowTty: string | undefined;
+  /** Makes looking up a process's group find nothing. */
+  groupsUnknown = false;
   /** Makes listing the processes on a terminal device fail with this message. */
   processListingFailure: string | undefined;
   /** Where compaction records are appended: `<transcriptRoot>/<project>/<sessionId>.jsonl`. */
@@ -95,6 +104,7 @@ export class FakeMac {
   private stopped = false;
   private typingNow = 0;
   private nextPid = 5000;
+  private nextGroup = 90000;
   private nextWindowId = 100;
   private nextSessionNumber = 1;
   private timers: { at: number; run: () => void }[] = [];
@@ -122,7 +132,7 @@ export class FakeMac {
       if (this.openFailure) throw new Error(this.openFailure);
       const window = this.addWindow();
       this.launches.push(launch);
-      const session = this.sessionFromLaunch(launch, window.tty);
+      const session = this.sessionFromLaunch(launch, window);
       if (this.startupMs === undefined) {
         this.sessions.push({ ...session, status: "busy" });
         window.text = "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit";
@@ -138,7 +148,7 @@ export class FakeMac {
       this.failIfTerminalBroken();
       if (this.tabLookupMs > 0) await this.clock.sleep(this.tabLookupMs);
       // A tab whose processes all ended still answers its old device, so only a tab in which a process runs counts.
-      const window = this.windows.find((candidate) => candidate.open && candidate.tty === tty && this.processesOn(tty).length > 0);
+      const window = this.windows.find((candidate) => candidate.open && candidate.tty === tty && this.processesOf(candidate).length > 0);
       return window && { windowId: window.id, tab: 1, tabCount: window.tabCount };
     },
     typeCommand: async (tab, command) => {
@@ -182,7 +192,7 @@ export class FakeMac {
       if (this.closeFailure) throw new Error(this.closeFailure);
       const window = this.windows.find((candidate) => candidate.id === windowId);
       // Terminal asks whether to terminate the processes still running in the window, and the window stays open.
-      if (window && this.processesOn(window.tty).length > 0) throw new Error(`Terminal did not close window ${windowId} within 10 seconds.`);
+      if (window && this.processesOf(window).length > 0) throw new Error(`Terminal did not close window ${windowId} within 10 seconds.`);
       if (window) window.open = false;
       this.closedWindows.push(windowId);
     }),
@@ -190,6 +200,7 @@ export class FakeMac {
 
   readonly processes: Processes = {
     ttyOf: (pid) => soon(() => this.sessions.find((session) => session.pid === pid)?.tty),
+    groupOf: (pid) => soon(() => (this.groupsUnknown ? undefined : this.sessions.find((session) => session.pid === pid)?.group)),
     onTty: (tty) =>
       soon(() => {
         if (this.processListingFailure) throw new Error(this.processListingFailure);
@@ -197,7 +208,7 @@ export class FakeMac {
       }),
     terminate: (pid) => {
       this.terminated.push(pid);
-      if (this.endsWhenAsked) this.at(2000, () => this.endSession(pid));
+      if (this.endsWhenAsked) this.at(this.endsAfterMs, () => this.endSession(pid));
     },
     isAlive: (pid) => this.sessions.some((session) => session.pid === pid),
   };
@@ -224,6 +235,7 @@ export class FakeMac {
       sessionId: this.newSessionId(),
       status: "idle",
       tty: window?.tty,
+      group: window?.group,
       ...overrides,
     };
     this.sessions.push(session);
@@ -242,7 +254,9 @@ export class FakeMac {
     this.sessions = this.sessions.filter((candidate) => candidate.pid !== pid);
     if (session?.tty === undefined || this.childrenOutliveMs === undefined) return;
     const until = this.childrenOutliveMs === "forever" ? Number.POSITIVE_INFINITY : this.now + this.childrenOutliveMs;
-    this.lingering.push({ tty: session.tty, pid: this.nextPid++, command: "npm exec chrome-devtools-mcp@1.13.0", until });
+    for (const command of ["npm exec chrome-devtools-mcp@1.13.0", "node"]) {
+      this.lingering.push({ tty: session.tty, pid: this.nextPid++, group: session.group!, command, until });
+    }
   }
 
   /** Ends the turn a session is in. A `/compact` that was queued during the turn then runs, as it does in Claude Code. */
@@ -261,7 +275,7 @@ export class FakeMac {
   }
 
   windowOf(session: FakeSession): FakeWindow {
-    const window = this.windows.find((candidate) => candidate.tty === session.tty);
+    const window = this.windows.find((candidate) => candidate.tty === session.tty && candidate.group === session.group);
     if (!window) throw new Error(`fake session ${session.name} has no window`);
     return window;
   }
@@ -295,15 +309,24 @@ export class FakeMac {
   }
 
   /** The processes that run on a terminal device: the sessions on it and what lingers after them. */
-  private processesOn(tty: string): { pid: number; command: string }[] {
-    const sessions = this.sessions.filter((session) => session.tty === tty).map((session) => ({ pid: session.pid!, command: "claude" }));
-    const lingering = this.lingering.filter((process) => process.tty === tty && process.until > this.now).map(({ pid, command }) => ({ pid, command }));
+  private processesOn(tty: string): { pid: number; group: number; command: string }[] {
+    const sessions = this.sessions
+      .filter((session) => session.tty === tty)
+      .map((session) => ({ pid: session.pid!, group: session.group ?? session.pid!, command: "claude" }));
+    const lingering = this.lingering
+      .filter((process) => process.tty === tty && process.until > this.now)
+      .map(({ pid, group, command }) => ({ pid, group, command }));
     return [...sessions, ...lingering];
+  }
+
+  /** The processes that run in a window's tab: those on its device that are in its tab's process group. */
+  private processesOf(window: FakeWindow): { pid: number; group: number; command: string }[] {
+    return this.processesOn(window.tty).filter((process) => process.group === window.group);
   }
 
   private sessionIn(tab: TabRef): FakeSession | undefined {
     const window = this.windows.find((candidate) => candidate.id === tab.windowId);
-    return this.sessions.find((candidate) => candidate.tty === window?.tty);
+    return this.sessions.find((candidate) => candidate.tty === window?.tty && candidate.group === window?.group);
   }
 
   private applyTyped(tab: TabRef, command: string): void {
@@ -389,7 +412,7 @@ export class FakeMac {
     session.status = "busy";
   }
 
-  private sessionFromLaunch(launch: Launch, tty: string): FakeSession {
+  private sessionFromLaunch(launch: Launch, window: FakeWindow): FakeSession {
     const option = (flag: string) => {
       const index = launch.argv.indexOf(flag);
       return index === -1 ? undefined : launch.argv[index + 1];
@@ -402,7 +425,8 @@ export class FakeMac {
       // A resumed session keeps the session ID of the conversation it resumes.
       sessionId: option("--resume") === undefined ? this.newSessionId() : (this.resumedUnder ?? option("--resume")),
       status: "idle",
-      tty,
+      tty: window.tty,
+      group: window.group,
       model: option("--model"),
       permissionMode: option("--permission-mode"),
     };
@@ -410,7 +434,8 @@ export class FakeMac {
 
   private addWindow(): FakeWindow {
     const id = this.nextWindowId++;
-    const window = { id, tty: `/dev/ttys${id}`, open: true, tabCount: 1, text: "" };
+    const window = { id, tty: this.nextWindowTty ?? `/dev/ttys${id}`, group: this.nextGroup++, open: true, tabCount: 1, text: "" };
+    this.nextWindowTty = undefined;
     this.windows.push(window);
     return window;
   }

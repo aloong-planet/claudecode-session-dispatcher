@@ -55,8 +55,13 @@ export interface Terminal {
 export interface Processes {
   /** The controlling terminal device of a process, such as `/dev/ttys007`. */
   ttyOf(pid: number): Promise<string | undefined>;
-  /** The processes whose controlling terminal device is `tty`, such as `/dev/ttys007`. Rejects when they cannot be listed. */
-  onTty(tty: string): Promise<{ pid: number; command: string }[]>;
+  /** The process group of a process, or undefined when it cannot be found. */
+  groupOf(pid: number): Promise<number | undefined>;
+  /**
+   * The processes whose controlling terminal device is `tty`, such as `/dev/ttys007`, each with its process group.
+   * Rejects when they cannot be listed.
+   */
+  onTty(tty: string): Promise<{ pid: number; group: number; command: string }[]>;
   /** Asks the process to end. */
   terminate(pid: number): void;
   isAlive(pid: number): boolean;
