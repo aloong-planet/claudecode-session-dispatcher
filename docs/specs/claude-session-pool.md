@@ -196,8 +196,8 @@ The server offers these tools to the sessions that claude-session-pool::REQ-006 
 | `compact` | `name`; `timeoutMinutes`: optional, a positive number |
 | `close` | `name`; `force`: optional boolean, default false |
 | `recycle` | `name`; `force`, `model`, `permissionMode`: optional |
-| `restore` | `names`: optional list of slot names, at least one; `model`, `permissionMode`: optional |
 | `release` | `name` |
+| `restore` | `names`: optional list of slot names, at least one; `model`, `permissionMode`: optional |
 
 ### Facts about Claude Code and Terminal the behaviour rests on
 
