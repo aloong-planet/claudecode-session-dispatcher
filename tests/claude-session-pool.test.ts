@@ -1187,6 +1187,85 @@ describe("close", () => {
     expect((await pool.status()).text).toBe(NO_SLOTS);
   });
 
+  // claude-session-pool::US-006/AC-01
+  it.each([
+    { groups: "the session's process group is found", groupsUnknown: false },
+    { groups: "the session's process group cannot be found", groupsUnknown: true },
+  ])("closes the window only once the processes its session started have left its tab, when $groups", async ({ groupsUnknown }) => {
+    const { mac, pool } = setup();
+    await pool.open({ name: "w1" });
+    const { pid } = mac.session("w1");
+    const window = mac.windowOf(mac.session("w1"));
+    mac.childrenOutliveMs = 3000;
+    mac.groupsUnknown = groupsUnknown;
+
+    const outcome = await pool.close({ name: "w1" });
+
+    expect(outcome).toEqual({ ok: true, text: `Closed "w1": its session (pid ${pid}) ended. Its Terminal window was closed.` });
+    expect(mac.closedWindows).toEqual([window.id]);
+  });
+
+  // claude-session-pool::US-006/AC-01
+  it("closes the window once its session's processes have left its tab, though a window opened since got its terminal device", async () => {
+    const { mac, pool } = setup();
+    await pool.open({ name: "w1" });
+    const { pid, tty } = mac.session("w1");
+    const window = mac.windowOf(mac.session("w1"));
+    mac.childrenOutliveMs = 3000;
+    // The moment the last of them ends, the owner opens a window, and the system gives it the device they left.
+    mac.at(mac.endsAfterMs + 3000, () => {
+      mac.nextWindowTty = tty;
+      mac.addSession({ name: "elsewhere", cwd: "/Users/someone/elsewhere" });
+    });
+
+    const outcome = await pool.close({ name: "w1" });
+
+    expect(outcome).toEqual({ ok: true, text: `Closed "w1": its session (pid ${pid}) ended. Its Terminal window was closed.` });
+    expect(mac.closedWindows).toEqual([window.id]);
+    expect(mac.windowOf(mac.session("elsewhere"))).toMatchObject({ tty, open: true });
+    expect(mac.terminated).toEqual([pid]);
+  });
+
+  // claude-session-pool::US-006/AC-02
+  it.each([
+    {
+      case: "processes still run in its tab",
+      arrange: (mac: FakeMac) => {
+        mac.childrenOutliveMs = "forever";
+      },
+      because: (mac: FakeMac) =>
+        `because processes still ran in its tab 10 seconds after the session ended: ${mac.lingering[0]!.pid} npm exec chrome-devtools-mcp@1.13.0, ${mac.lingering[1]!.pid} node`,
+    },
+    {
+      case: "the processes in its tab cannot be listed",
+      arrange: (mac: FakeMac) => {
+        mac.processListingFailure = "ps: sysctl: Operation not permitted";
+      },
+      because: () => "because the processes in its tab could not be listed 10 seconds after the session ended: ps: sysctl: Operation not permitted",
+    },
+  ])("leaves the window open and says why when, 10 seconds after the session ended, $case", async ({ arrange, because }) => {
+    const { mac, pool } = setup();
+    await pool.open({ name: "w1" });
+    const { pid } = mac.session("w1");
+    const window = mac.windowOf(mac.session("w1"));
+    arrange(mac);
+    const sessionEnds = mac.now + mac.endsAfterMs;
+    let returnedAt: number | undefined;
+
+    const outcome = await pool.close({ name: "w1" }).then((result) => {
+      returnedAt = mac.now;
+      return result;
+    });
+
+    expect(outcome).toEqual({ ok: true, text: `Closed "w1": its session (pid ${pid}) ended. Its Terminal window was left open, ${because(mac)}` });
+    // The pool sees the session gone at its next look, up to a second after it ended.
+    expect(returnedAt! - sessionEnds).toBeGreaterThanOrEqual(10_000);
+    expect(returnedAt! - sessionEnds).toBeLessThanOrEqual(11_000);
+    expect(window.open).toBe(true);
+    expect(mac.closedWindows).toEqual([]);
+    expect((await pool.status()).text).toBe(NO_SLOTS);
+  });
+
   it("ends an adopted slot's session and leaves the owner's window open", async () => {
     const { mac, pool, directory } = setup();
     const session = mac.addSession({ name: "w1", cwd: directory });

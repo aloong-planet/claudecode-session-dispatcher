@@ -29,7 +29,10 @@ const FIND_TAB = `on run argv
           set w to window id (windowId as integer)
           set tabTotal to count of tabs of w
           repeat with i from 1 to tabTotal
-            if (tty of tab i of w) is (item 1 of argv) then return ((windowId as integer) as text) & " " & i & " " & tabTotal
+            -- A tab whose processes have all ended still answers the device it had, which may since host another tab.
+            if (tty of tab i of w) is (item 1 of argv) then
+              if (count of processes of tab i of w) > 0 then return ((windowId as integer) as text) & " " & i & " " & tabTotal
+            end if
           end repeat
         end try
       end repeat

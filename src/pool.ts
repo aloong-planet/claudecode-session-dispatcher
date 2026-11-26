@@ -33,6 +33,7 @@ export const LIMITS = {
   compactRecordAfterIdleMs: 10_000,
   compactDefaultMinutes: 30,
   exitMs: 15_000,
+  windowEmptyMs: 10_000,
 };
 
 const DEFAULT_MODEL = "opus";
@@ -463,7 +464,10 @@ export class Pool {
     }
     // The server closes only a window it opened itself: the one that hosts the session it opened for this slot.
     const serverOpened = slot.origin === "opened" && slot.pid === session.pid;
-    const tab = serverOpened ? await this.findTab(session.pid) : undefined;
+    const tty = serverOpened ? await this.deps.processes.ttyOf(session.pid) : undefined;
+    const tab = tty === undefined ? undefined : await this.deps.terminal.findTab(tty);
+    // Taken while the session runs: the group its tab's processes share, which a window opened later on the same device does not.
+    const group = tab === undefined ? undefined : await this.deps.processes.groupOf(session.pid);
     this.deps.processes.terminate(session.pid);
     const deadline = this.deps.clock.now() + LIMITS.exitMs;
     while (this.deps.processes.isAlive(session.pid)) {
@@ -495,8 +499,12 @@ export class Pool {
     if (!serverOpened) {
       return `${ended} Its Terminal window was left open, because the roster does not record this session as one the server opened.`;
     }
-    if (!tab) return `${ended} No Terminal window was found for it.`;
+    if (!tab || tty === undefined) return `${ended} No Terminal window was found for it.`;
     if (tab.tabCount > 1) return `${ended} Its tab was left open, because its window has other tabs and Terminal cannot close a single tab.`;
+    // Terminal asks before closing a window in which a process still runs, and the question keeps it open, so the
+    // window is closed only once what the session started has left its tab too.
+    const stillThere = await this.awaitEmptyTab(tty, group);
+    if (stillThere) return `${ended} Its Terminal window was left open, because ${stillThere}`;
     try {
       await this.exclusive(() => this.deps.terminal.close(tab.windowId));
     } catch (error) {
@@ -603,6 +611,28 @@ export class Pool {
     return this.exclusive(() => {
       this.roster.write(change(this.roster.read()));
     });
+  }
+
+  /**
+   * Waits up to `LIMITS.windowEmptyMs` for no process of the process group `group` to be left on the terminal device
+   * `tty`, or for no process at all when the group is not known. Returns undefined once none is, or else what was still
+   * there at the limit, worded to follow "because".
+   */
+  private async awaitEmptyTab(tty: string, group: number | undefined): Promise<string | undefined> {
+    const deadline = this.deps.clock.now() + LIMITS.windowEmptyMs;
+    const limit = `${LIMITS.windowEmptyMs / 1000} seconds after the session ended`;
+    for (;;) {
+      let seen: string;
+      try {
+        const left = (await this.deps.processes.onTty(tty)).filter((process) => group === undefined || process.group === group);
+        if (left.length === 0) return undefined;
+        seen = `processes still ran in its tab ${limit}: ${left.map((process) => `${process.pid} ${process.command}`).join(", ")}`;
+      } catch (error) {
+        seen = `the processes in its tab could not be listed ${limit}: ${messageOf(error)}`;
+      }
+      if (this.deps.clock.now() >= deadline) return seen;
+      await this.deps.clock.sleep(LIMITS.pollMs);
+    }
   }
 
   private async findTab(pid: number): Promise<TabRef | undefined> {

@@ -102,7 +102,7 @@ function registerPoolTools(server: McpServer, pool: Pool): void {
     "close",
     {
       description:
-        "End a slot's session and remove the slot from the roster. Closes the Terminal window only when this server opened it for the session being ended and it has no other tab; otherwise leaves it open and says so.",
+        "End a slot's session and remove the slot from the roster. Closes the Terminal window only when this server opened it for the session being ended, it has no other tab, and no process is left in its tab within 10 seconds of the session ending; otherwise leaves it open and says so, naming any processes left.",
       inputSchema: { name, force },
     },
     async (args) => reply(await pool.close(args)),
