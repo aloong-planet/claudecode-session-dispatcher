@@ -1,6 +1,6 @@
 # ADR-0002: A self-compacting session is woken by the plugin's mod, or by a hook where the mod does not run
 
-- Status: Proposed
+- Status: Accepted (2026-11-26)
 
 ## Context
 

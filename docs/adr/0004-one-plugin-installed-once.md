@@ -1,6 +1,6 @@
 # ADR-0004: The server, the hooks and the mod are one plugin, installed once at user scope
 
-- Status: Proposed
+- Status: Accepted (2026-11-26)
 
 ## Context
 
