@@ -802,6 +802,25 @@ describe("a stalled slot (claude-session-pool-monitor::US-001/AC-06)", () => {
     expect(pool.mod.prompts).toEqual([WAITING, report("- wa: busy, and it made no progress for 16 minutes. Its tool call Bash has been running for 16 minutes.")]);
   });
 
+  it("counts a look that found the slot waiting while its record was no longer written, which judges the slot all the same (claude-session-pool-monitor::US-001/AC-08)", async () => {
+    const { pool, wa, listed } = await callStarted();
+    wa.writing = false;
+    listed(W1, "waiting");
+    await pool.looks(15);
+    wa.writing = true;
+    listed(W1, "busy");
+    await pool.looks(11);
+    const before = pool.mod.prompts.length;
+    await pool.looks();
+
+    expect(before).toBe(2);
+    expect(pool.mod.prompts).toEqual([
+      WAITING,
+      report("- wa: its session writes no activity record, so whether it makes progress is not known."),
+      report("- wa: busy, and it made no progress for 12 minutes. Its tool call Bash has been running for 40 minutes."),
+    ]);
+  });
+
   it("is reported anew when it stalls after it made progress again (claude-session-pool-monitor::US-001/AC-09)", async () => {
     const { pool, wa } = await busy(undefined);
     await pool.looks(4);
