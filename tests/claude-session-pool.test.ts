@@ -1187,7 +1187,7 @@ describe("close", () => {
     expect((await pool.status()).text).toBe(NO_SLOTS);
   });
 
-  // US-006/AC-01
+  // claude-session-pool::US-006/AC-01
   it("closes the window only once the processes its session started have left its tab", async () => {
     const { mac, pool } = setup();
     await pool.open({ name: "w1" });
@@ -1201,7 +1201,7 @@ describe("close", () => {
     expect(mac.closedWindows).toEqual([window.id]);
   });
 
-  // US-006/AC-02
+  // claude-session-pool::US-006/AC-02
   it.each([
     {
       case: "processes still run in its tab",
