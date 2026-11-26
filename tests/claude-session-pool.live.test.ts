@@ -1,11 +1,12 @@
 /**
- * The Terminal adapter against the real Terminal application. It opens a real window, so it runs only when
- * CLAUDE_SESSION_POOL_LIVE=1 is set, on a Mac with Terminal running. The window runs `support/keylogger.ts`
- * instead of Claude Code, so no session is started.
+ * The Terminal adapter against the real Terminal application. It opens real windows, so it runs only when
+ * CLAUDE_SESSION_POOL_LIVE=1 is set, on a Mac with Terminal running. A window runs `support/keylogger.ts`, or a
+ * program that ends at once, instead of Claude Code, so no session is started.
  *
  * It checks which Terminal window is in front, so it fails if a person switches Terminal windows while it runs.
- * The new window takes the keyboard for a moment: keystrokes a person types just then land in it, and the test
- * then fails on the keys it received.
+ * A new window takes the keyboard for a moment: keystrokes a person types just then land in it, and the test
+ * then fails on the keys it received. The second test moves the window whose program ended to just behind the
+ * front window, which leaves the front window as it was.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
