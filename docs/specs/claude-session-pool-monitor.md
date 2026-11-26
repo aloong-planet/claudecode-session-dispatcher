@@ -6,7 +6,7 @@ A dispatcher session learns what a worker session is doing only from the message
 
 ## Solution
 
-In a dispatcher session the plugin's mod looks at every slot of the pool once a minute, without a model request. It judges a slot by the session listing and by the activity record that the mod in the slot's own session writes. When a slot needs attention, it starts a turn in the dispatcher session with a report that names the slot and what it found. It also records what each look found, so that `status` can state what a slot whose session has ended last was. Worker sessions are only read.
+In a dispatcher session the plugin's mod looks at every slot of the pool once a minute, without a model request. It judges a slot by the session listing and by the activity record that the mod in the slot's own session writes. When a slot needs attention, it starts a turn in the dispatcher session with a report that names the slot and what it found. It also records what each look found, so that the pool can be brought back after its sessions have ended. Worker sessions are only read.
 
 ## User Stories
 
