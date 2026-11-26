@@ -38,7 +38,10 @@ export type TabRef = {
 export interface Terminal {
   /** Opens a new window, starts `launch` in it, and puts the previously frontmost window back in front. */
   open(launch: Launch): Promise<{ windowId: number; tty: string }>;
-  /** The tab whose terminal device is `tty`, if Terminal has one. */
+  /**
+   * The tab whose terminal device is `tty` and in which Terminal lists a process, if it has one. A tab whose processes
+   * have all ended is passed over: it still answers its old device, which the system may since have given another tab.
+   */
   findTab(tty: string): Promise<TabRef | undefined>;
   /** Discards whatever sits in the program's input box, then types `command` followed by Return. */
   typeCommand(tab: TabRef, command: string): Promise<void>;
@@ -52,6 +55,8 @@ export interface Terminal {
 export interface Processes {
   /** The controlling terminal device of a process, such as `/dev/ttys007`. */
   ttyOf(pid: number): Promise<string | undefined>;
+  /** The processes whose controlling terminal device is `tty`, such as `/dev/ttys007`. Rejects when they cannot be listed. */
+  onTty(tty: string): Promise<{ pid: number; command: string }[]>;
   /** Asks the process to end. */
   terminate(pid: number): void;
   isAlive(pid: number): boolean;

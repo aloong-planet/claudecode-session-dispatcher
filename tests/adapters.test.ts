@@ -167,6 +167,39 @@ describe("processes", () => {
     expect(await new SystemProcesses(failing("ps exited with code 1")).ttyOf(123)).toBeUndefined();
   });
 
+  // Shaped like `ps -A -o tty=,pid=,comm=` on macOS 26.0.1: `??` for no terminal, right-aligned process IDs, and
+  // commands that hold spaces.
+  const listing = [
+    "??          1 /sbin/launchd",
+    "??      26417 /usr/libexec/trustd",
+    "ttys000  26206 claude",
+    "ttys000  26417 npm exec chrome-devtools-mcp@1.13.0",
+    "ttys000  96121 login",
+    "ttys0001  4410 -zsh",
+    "ttys004   6448 login",
+    "ttys004   6449 -zsh",
+    "",
+  ].join("\n");
+
+  it.each([
+    {
+      tty: "/dev/ttys000",
+      processes: [
+        { pid: 26206, command: "claude" },
+        { pid: 26417, command: "npm exec chrome-devtools-mcp@1.13.0" },
+        { pid: 96121, command: "login" },
+      ],
+    },
+    { tty: "/dev/ttys004", processes: [{ pid: 6448, command: "login" }, { pid: 6449, command: "-zsh" }] },
+    { tty: "/dev/ttys009", processes: [] },
+  ])("lists the processes on $tty from the listing of every process", async ({ tty, processes }) => {
+    expect(await new SystemProcesses(printing(listing)).onTty(tty)).toEqual(processes);
+  });
+
+  it("rejects when the processes cannot be listed", async () => {
+    await expect(new SystemProcesses(failing("ps exited with code 1")).onTty("/dev/ttys000")).rejects.toThrow("ps exited with code 1");
+  });
+
   it("ends a real process and sees that it is gone", async () => {
     const processes = new SystemProcesses(failing("unused"));
     const child = spawn("sleep", ["30"]);

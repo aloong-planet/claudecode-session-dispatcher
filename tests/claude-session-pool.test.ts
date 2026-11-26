@@ -1187,6 +1187,52 @@ describe("close", () => {
     expect((await pool.status()).text).toBe(NO_SLOTS);
   });
 
+  // US-006/AC-01
+  it("closes the window only once the processes its session started have left its tab", async () => {
+    const { mac, pool } = setup();
+    await pool.open({ name: "w1" });
+    const { pid } = mac.session("w1");
+    const window = mac.windowOf(mac.session("w1"));
+    mac.childrenOutliveMs = 3000;
+
+    const outcome = await pool.close({ name: "w1" });
+
+    expect(outcome).toEqual({ ok: true, text: `Closed "w1": its session (pid ${pid}) ended. Its Terminal window was closed.` });
+    expect(mac.closedWindows).toEqual([window.id]);
+  });
+
+  // US-006/AC-02
+  it.each([
+    {
+      case: "processes still run in its tab",
+      arrange: (mac: FakeMac) => {
+        mac.childrenOutliveMs = "forever";
+      },
+      because: (mac: FakeMac) =>
+        `because processes still ran in its tab 10 seconds after the session ended: ${mac.lingering[0]!.pid} npm exec chrome-devtools-mcp@1.13.0`,
+    },
+    {
+      case: "the processes in its tab cannot be listed",
+      arrange: (mac: FakeMac) => {
+        mac.processListingFailure = "ps: sysctl: Operation not permitted";
+      },
+      because: () => "because the processes in its tab could not be listed 10 seconds after the session ended: ps: sysctl: Operation not permitted",
+    },
+  ])("leaves the window open and says why when, 10 seconds after the session ended, $case", async ({ arrange, because }) => {
+    const { mac, pool } = setup();
+    await pool.open({ name: "w1" });
+    const { pid } = mac.session("w1");
+    const window = mac.windowOf(mac.session("w1"));
+    arrange(mac);
+
+    const outcome = await pool.close({ name: "w1" });
+
+    expect(outcome).toEqual({ ok: true, text: `Closed "w1": its session (pid ${pid}) ended. Its Terminal window was left open, ${because(mac)}` });
+    expect(window.open).toBe(true);
+    expect(mac.closedWindows).toEqual([]);
+    expect((await pool.status()).text).toBe(NO_SLOTS);
+  });
+
   it("ends an adopted slot's session and leaves the owner's window open", async () => {
     const { mac, pool, directory } = setup();
     const session = mac.addSession({ name: "w1", cwd: directory });
